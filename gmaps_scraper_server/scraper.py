@@ -139,19 +139,62 @@ async def scrape_google_maps(query, max_places=None, lang="en", headless=True, c
             try:
                 # Check if we're on a consent page by looking for consent-related elements
                 # German: "Alle akzeptieren", "Alle ablehnen"
-                # English: "Accept all", "Reject all"
+                # English: "Accept all", "Reject all", "I agree", "I reject"
                 # Spanish: "Aceptar todo", "Rechazar todo"
+                # French: "Tout accepter", "Tout refuser"
+                # Italian: "Accetta tutto", "Rifiuta tutto"
+                # Dutch: "Alles accepteren", "Alles afwijzen"
+                # Portuguese: "Aceitar tudo", "Recusar tudo"
+                # Polish: "Zaakceptuj wszystko", "Odrzuć wszystko"
+                # Swedish: "Godkänn alla", "Avvisa alla"
+                # Danish: "Acceptér alle", "Afvis alle"
+                # Norwegian: "Godta alle", "Avvis alle"
+                # Greek: "Αποδοχή όλων", "Απόρριψη όλων"
+                # Turkish: "Tümünü kabul et", "Tümünü reddet"
                 
                 # Use aria-label selectors instead of XPath (XPath text() matching is unreliable)
                 consent_selectors = [
+                    # German
                     'button[aria-label="Alle akzeptieren"]',  # German accept
                     'button[aria-label="Alle ablehnen"]',     # German reject
+                    # English
                     'button[aria-label="I agree"]',           # English accept
                     'button[aria-label="I reject"]',          # English reject
                     'button[aria-label="Accept all"]',        # English accept
                     'button[aria-label="Reject all"]',        # English reject
+                    # Spanish
                     'button[aria-label="Aceptar todo"]',      # Spanish accept
                     'button[aria-label="Rechazar todo"]',     # Spanish reject
+                    # French (correct order: "Tout accepter", "Tout refuser")
+                    'button[aria-label="Tout accepter"]',     # French accept
+                    'button[aria-label="Tout refuser"]',      # French reject
+                    # Italian
+                    'button[aria-label="Accetta tutto"]',     # Italian accept
+                    'button[aria-label="Rifiuta tutto"]',     # Italian reject
+                    # Dutch
+                    'button[aria-label="Alles accepteren"]',  # Dutch accept
+                    'button[aria-label="Alles afwijzen"]',    # Dutch reject
+                    # Portuguese
+                    'button[aria-label="Aceitar tudo"]',      # Portuguese accept
+                    'button[aria-label="Recusar tudo"]',      # Portuguese reject
+                    # Polish
+                    'button[aria-label="Zaakceptuj wszystko"]', # Polish accept
+                    'button[aria-label="Odrzuć wszystko"]',    # Polish reject
+                    # Swedish
+                    'button[aria-label="Godkänn alla"]',      # Swedish accept
+                    'button[aria-label="Avvisa alla"]',       # Swedish reject
+                    # Danish
+                    'button[aria-label="Acceptér alle"]',     # Danish accept
+                    'button[aria-label="Afvis alle"]',        # Danish reject
+                    # Norwegian
+                    'button[aria-label="Godta alle"]',        # Norwegian accept
+                    'button[aria-label="Avvis alle"]',        # Norwegian reject
+                    # Greek
+                    'button[aria-label="Αποδοχή όλων"]',      # Greek accept
+                    'button[aria-label="Απόρριψη όλων"]',     # Greek reject
+                    # Turkish
+                    'button[aria-label="Tümünü kabul et"]',   # Turkish accept
+                    'button[aria-label="Tümünü reddet"]',     # Turkish reject
                 ]
                 
                 consent_button = None
