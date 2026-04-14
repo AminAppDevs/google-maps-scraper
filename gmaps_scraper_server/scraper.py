@@ -129,31 +129,141 @@ async def scrape_google_maps(query, max_places=None, lang="en", headless=True, c
             # Navigate to Google Maps homepage first (more natural, avoids sidebar issues)
             logger.info("Navigating to Google Maps homepage...")
             await page.goto('https://www.google.com/maps', wait_until='domcontentloaded')
-            await asyncio.sleep(random_delay(3.0, 5.0))  # Give page time to fully load
+            await asyncio.sleep(random_delay(2.0, 3.0))  # Give page time to fully load
 
-            # Find and use the search box
+            # --- Handle Terms of Service / Consent pages BEFORE search ---
+            # Google Maps may show a consent page before showing the actual map
+            logger.info("Checking for consent/terms page...")
+            consent_handled = False
+            
+            try:
+                # Check if we're on a consent page by looking for consent-related elements
+                # German: "Alle akzeptieren", "Alle ablehnen"
+                # English: "Accept all", "Reject all", "I agree", "I reject"
+                # Spanish: "Aceptar todo", "Rechazar todo"
+                # French: "Tout accepter", "Tout refuser"
+                # Italian: "Accetta tutto", "Rifiuta tutto"
+                # Dutch: "Alles accepteren", "Alles afwijzen"
+                # Portuguese: "Aceitar tudo", "Recusar tudo"
+                # Polish: "Zaakceptuj wszystko", "Odrzuć wszystko"
+                # Swedish: "Godkänn alla", "Avvisa alla"
+                # Danish: "Acceptér alle", "Afvis alle"
+                # Norwegian: "Godta alle", "Avvis alle"
+                # Greek: "Αποδοχή όλων", "Απόρριψη όλων"
+                # Turkish: "Tümünü kabul et", "Tümünü reddet"
+                
+                # Use aria-label selectors instead of XPath (XPath text() matching is unreliable)
+                consent_selectors = [
+                    # German
+                    'button[aria-label="Alle akzeptieren"]',  # German accept
+                    'button[aria-label="Alle ablehnen"]',     # German reject
+                    # English
+                    'button[aria-label="I agree"]',           # English accept
+                    'button[aria-label="I reject"]',          # English reject
+                    'button[aria-label="Accept all"]',        # English accept
+                    'button[aria-label="Reject all"]',        # English reject
+                    # Spanish
+                    'button[aria-label="Aceptar todo"]',      # Spanish accept
+                    'button[aria-label="Rechazar todo"]',     # Spanish reject
+                    # French (correct order: "Tout accepter", "Tout refuser")
+                    'button[aria-label="Tout accepter"]',     # French accept
+                    'button[aria-label="Tout refuser"]',      # French reject
+                    # Italian
+                    'button[aria-label="Accetta tutto"]',     # Italian accept
+                    'button[aria-label="Rifiuta tutto"]',     # Italian reject
+                    # Dutch
+                    'button[aria-label="Alles accepteren"]',  # Dutch accept
+                    'button[aria-label="Alles afwijzen"]',    # Dutch reject
+                    # Portuguese
+                    'button[aria-label="Aceitar tudo"]',      # Portuguese accept
+                    'button[aria-label="Recusar tudo"]',      # Portuguese reject
+                    # Polish
+                    'button[aria-label="Zaakceptuj wszystko"]', # Polish accept
+                    'button[aria-label="Odrzuć wszystko"]',    # Polish reject
+                    # Swedish
+                    'button[aria-label="Godkänn alla"]',      # Swedish accept
+                    'button[aria-label="Avvisa alla"]',       # Swedish reject
+                    # Danish
+                    'button[aria-label="Acceptér alle"]',     # Danish accept
+                    'button[aria-label="Afvis alle"]',        # Danish reject
+                    # Norwegian
+                    'button[aria-label="Godta alle"]',        # Norwegian accept
+                    'button[aria-label="Avvis alle"]',        # Norwegian reject
+                    # Greek
+                    'button[aria-label="Αποδοχή όλων"]',      # Greek accept
+                    'button[aria-label="Απόρριψη όλων"]',     # Greek reject
+                    # Turkish
+                    'button[aria-label="Tümünü kabul et"]',   # Turkish accept
+                    'button[aria-label="Tümünü reddet"]',     # Turkish reject
+                ]
+                
+                consent_button = None
+                for selector in consent_selectors:
+                    try:
+                        consent_button = await page.wait_for_selector(selector, state='visible', timeout=3000)
+                        if consent_button:
+                            logger.info(f"Found consent page - clicking accept/reject button with selector: {selector}")
+                            await consent_button.click()
+                            consent_handled = True
+                            await asyncio.sleep(random_delay(1.0, 2.0))  # Wait for navigation
+                            break
+                    except Exception as e:
+                        logger.debug(f"Selector '{selector}' not found: {e}")
+                        continue
+                    
+            except PlaywrightTimeoutError:
+                logger.debug("No consent page detected or timed out waiting.")
+            except Exception as e:
+                logger.warning(f"Error handling consent page: {e}")
+            
+            # If consent was handled, wait for the page to stabilize
+            if consent_handled:
+                await asyncio.sleep(random_delay(2.0, 3.0))
+
+            # --- Find and use the search box AFTER consent handling ---
             logger.info(f"Typing search query: {query}")
             try:
-                # Try multiple search box selectors (Google Maps changes frequently)
+                # Updated search box selectors for new Google Maps DOM structure
+                # The input element uses role="combobox" and name="q"
                 search_box_selectors = [
-                    'input[id="searchboxinput"]',
-                    'input[aria-label*="Search"]',
-                    'input[placeholder*="Search"]',
-                    'input[name="q"]',
+                    'input[name="q"]',  # PRIMARY: Most reliable selector
+                    'input[role="combobox"]',  # SECONDARY: Combobox role
+                    'input[aria-controls="ucc-0"]',  # TERTIARY: Control attribute
+                    'input[id="searchboxinput"]',  # FALLBACK: Older selector
+                    'input[aria-label*="Search"]',  # FALLBACK: English
+                    'input[aria-label*="suchen"]',  # FALLBACK: German
+                    'input[placeholder*="Search"]',  # FALLBACK
+                    'input[placeholder*="Suchen"]',  # FALLBACK: German
                 ]
 
                 search_box = None
                 for selector in search_box_selectors:
                     try:
-                        await page.wait_for_selector(selector, state='visible', timeout=5000)
-                        search_box = selector
-                        logger.debug(f"Found search box with selector: {selector}")
-                        break
-                    except:
+                        search_box_element = await page.wait_for_selector(selector, state='visible', timeout=3000)
+                        if search_box_element:
+                            search_box = selector
+                            logger.debug(f"Found search box with selector: {selector}")
+                            break
+                    except Exception as e:
+                        logger.debug(f"Selector '{selector}' not found: {e}")
                         continue
 
                 if not search_box:
+                    # Additional diagnostic: log what elements exist on the page
                     logger.error("Could not find search box on Google Maps")
+                    logger.error("Page title: %s", await page.title())
+                    logger.error("Page URL: %s", page.url)
+                    
+                    # Try to debug: find all input elements on the page
+                    try:
+                        all_inputs = await page.query_selector_all('input')
+                        logger.error(f"Found {len(all_inputs)} input elements on the page")
+                        for i, inp in enumerate(all_inputs[:5]):
+                            attrs = await inp.get_attribute('name'), await inp.get_attribute('aria-label'), await inp.get_attribute('placeholder')
+                            logger.error(f"Input {i}: name={attrs[0]}, aria-label={attrs[1]}, placeholder={attrs[2]}")
+                    except Exception as debug_error:
+                        logger.error(f"Could not debug input elements: {debug_error}")
+                    
                     await browser.close()
                     return []
 
@@ -170,31 +280,6 @@ async def scrape_google_maps(query, max_places=None, lang="en", headless=True, c
                 logger.error(f"Error performing search: {e}")
                 await browser.close()
                 return []
-
-            # --- Handle potential consent forms ---
-            try:
-                # Expanded consent xpath to include Spanish and input elements (from PR #7)
-                consent_xpath = "//button[.//span[contains(text(), 'Accept all') or contains(text(), 'Reject all') or contains(text(), 'Aceptar todo') or contains(text(), 'Rechazar todo') or contains(text(), 'Accept')]] | //input[@type='submit' and (@value='Accept all' or @value='Reject all' or @value='Aceptar todo' or @value='Rechazar todo')]"
-
-                # Wait briefly for the button to potentially appear
-                await page.wait_for_selector(consent_xpath, state='visible', timeout=5000)
-
-                # Prioritize "Accept all" / "Aceptar todo"
-                accept_button = await page.query_selector("//button[.//span[contains(text(), 'Accept all') or contains(text(), 'Aceptar todo')]] | //input[@type='submit' and (@value='Accept all' or @value='Aceptar todo')]")
-                if accept_button:
-                    logger.info("Accepting consent form...")
-                    await accept_button.click()
-                else:
-                    # Fallback
-                    logger.info("Clicking available consent button...")
-                    await page.locator(consent_xpath).first.click()
-
-                # Wait for navigation/popup closure
-                await page.wait_for_load_state('networkidle', timeout=5000)
-            except PlaywrightTimeoutError:
-                logger.debug("No consent form detected or timed out waiting.")
-            except Exception as e:
-                logger.warning(f"Error handling consent form: {e}")
 
 
             # --- Scrolling and Link Extraction ---
