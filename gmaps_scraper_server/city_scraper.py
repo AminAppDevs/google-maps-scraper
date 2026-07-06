@@ -36,11 +36,15 @@ PET_KEYWORDS_AR = ["محل حيوانات أليفة", "عيادة بيطرية"
 
 def keywords_for_lang(lang: str, include_vet: bool = True) -> List[str]:
     if lang == "ar":
-        kws = ["محل حيوانات أليفة"]
+        kws = [
+            "محل حيوانات أليفة",
+            "متجر مستلزمات حيوانات",
+            "طيور وأسماك زينة",
+        ]
         if include_vet:
             kws.append("عيادة بيطرية")
         return kws
-    kws = ["pet store"]
+    kws = ["pet store supplies"]
     if include_vet:
         kws.append("veterinary clinic")
     return kws

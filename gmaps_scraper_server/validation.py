@@ -30,6 +30,58 @@ SAUDI_ADDRESS_HINT = re.compile(
     re.IGNORECASE,
 )
 
+# Must match name or Google category
+PET_KEYWORDS = re.compile(
+    r"(?:"
+    r"pet\s*shop|pet\s*store|petshop|pets?|paw|"
+    r"بتس|پتس|"
+    r"veterinar|vet\s*clinic|"
+    r"حيوان(?:ات)?|أليف|اليف|اليفه|اليفة|"
+    r"بيطر|بيطري|بيطرية|"
+    r"طيور|طير|أسماك|اسماك|زينة|"
+    r"كلاب|كلب|قطة|قطط|كات\b|"
+    r"dog|cat|bird|fish|aquarium|kennel|"
+    r"بيرد|"
+    r"صقور|صقر|"
+    r"groom|تجميل\s*حيوان|"
+    r"مستلزمات\s*حيوان|متجر\s*حيوان|"
+    r"animals?|zoo|"
+    r"كائنات|"
+    r"حياة\s*مائ|مائ(?:ي|ی)(?:ه|ة)?|aquatic"
+    r")",
+    re.IGNORECASE,
+)
+
+# Always exclude — supermarkets, IKEA, pharmacies, etc.
+NON_PET_HARD_EXCLUDE = re.compile(
+    r"(?:"
+    r"ikea|إيكيا|"
+    r"tamimi|التميمي|"
+    r"nahdi|النهدي|"
+    r"carrefour|كارفور|"
+    r"panda\s*market|بنده|"
+    r"danube|دانوب|"
+    r"farm\s*superstore|اسواق\s*المزرعة|"
+    r"hypermarket|supermarket|سوبر\s*ماركت|"
+    r"pharmacy|صيدل|"
+    r"hardware|مواد\s*بناء|"
+    r"arcade|أركيد|"
+    r"advertis|دعاية|إعلان|"
+    r"restaurant|مطع|"
+    r"hotel|فندق|"
+    r"bank|بنك|"
+    r"mosque|مسجد|"
+    r"grocery|بقالة|"
+    r"العثيم|othaim|"
+    r"أسواق\s*التميمي|أسواق\s*المزرعة|أسواق\s*المنتزه|أسواق\s*زاد|"
+    r"أسواق\s*النهدي|أسواق\s*عبدالله|أسواق\s*النخبة|أسواق\s*مكان|"
+    r"كماليات|"
+    r"مواشي|"
+    r"building\s*materials"
+    r")",
+    re.IGNORECASE,
+)
+
 
 def _digits(phone: Optional[str]) -> str:
     if not phone:
@@ -125,6 +177,32 @@ def _coords(place: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
         return None, None
 
 
+def _place_search_text(place: Dict[str, Any]) -> str:
+    name = place.get("name") or ""
+    cats = place.get("categories")
+    if isinstance(cats, list):
+        cat_text = " ".join(str(c) for c in cats)
+    elif cats:
+        cat_text = str(cats)
+    else:
+        cat_text = ""
+    return f"{name} {cat_text}".strip()
+
+
+def is_pet_related(place: Dict[str, Any]) -> bool:
+    """True if name/categories indicate pet store, vet, or pet supplies."""
+    text = _place_search_text(place)
+    if not text:
+        return False
+    if NON_PET_HARD_EXCLUDE.search(text):
+        return False
+    return bool(PET_KEYWORDS.search(text))
+
+
+def should_reject_non_pet(place: Dict[str, Any]) -> bool:
+    return not is_pet_related(place)
+
+
 def should_reject_place(place: Dict[str, Any], city: Optional[str] = None) -> bool:
     """Drop listings that are clearly not in Saudi Arabia."""
     phone = place.get("phone")
@@ -179,6 +257,9 @@ def clean_place_record(place: Dict[str, Any], city: Optional[str] = None) -> Opt
     if not cleaned.get("phone"):
         return None
 
+    if should_reject_non_pet(cleaned):
+        return None
+
     return cleaned
 
 
@@ -191,6 +272,7 @@ def filter_places_for_saudi(
     kept: List[Dict[str, Any]] = []
     rejected_foreign = 0
     rejected_no_phone = 0
+    rejected_non_pet = 0
 
     for place in places:
         cleaned = clean_place_record(place, city=city)
@@ -199,6 +281,8 @@ def filter_places_for_saudi(
                 rejected_foreign += 1
             elif not normalize_saudi_phone(place.get("phone")):
                 rejected_no_phone += 1
+            elif should_reject_non_pet(place):
+                rejected_non_pet += 1
             else:
                 rejected_no_phone += 1
             continue
@@ -209,5 +293,6 @@ def filter_places_for_saudi(
         "kept_count": len(kept),
         "rejected_foreign": rejected_foreign,
         "rejected_no_phone": rejected_no_phone,
+        "rejected_non_pet": rejected_non_pet,
         "filtered_out": raw - len(kept),
     }

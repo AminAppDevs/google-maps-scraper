@@ -374,11 +374,18 @@ def delete_place(place_id: int) -> bool:
 
 
 def cleanup_invalid_places() -> Dict[str, int]:
-    """Remove foreign/invalid listings and any row without a valid Saudi phone."""
-    from .validation import clean_address, is_us_or_foreign_phone, normalize_saudi_phone, should_reject_place
+    """Remove foreign/invalid listings, non-pet businesses, and rows without phone."""
+    from .validation import (
+        clean_address,
+        is_us_or_foreign_phone,
+        normalize_saudi_phone,
+        should_reject_non_pet,
+        should_reject_place,
+    )
 
     deleted = 0
     deleted_no_phone = 0
+    deleted_non_pet = 0
     phone_fixed = 0
 
     with get_connection() as conn:
@@ -390,6 +397,11 @@ def cleanup_invalid_places() -> Dict[str, int]:
             if should_reject_place(p, city=p.get("city")):
                 conn.execute("DELETE FROM places WHERE id = ?", (p["id"],))
                 deleted += 1
+                continue
+
+            if should_reject_non_pet(p):
+                conn.execute("DELETE FROM places WHERE id = ?", (p["id"],))
+                deleted_non_pet += 1
                 continue
 
             phone = p.get("phone")
@@ -427,6 +439,7 @@ def cleanup_invalid_places() -> Dict[str, int]:
     return {
         "deleted": deleted,
         "deleted_no_phone": deleted_no_phone,
+        "deleted_non_pet": deleted_non_pet,
         "fixed": phone_fixed,
     }
 

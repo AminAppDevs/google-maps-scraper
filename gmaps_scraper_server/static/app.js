@@ -608,14 +608,14 @@ pageNextBtn.addEventListener("click", () => {
 document.getElementById("refresh-results").addEventListener("click", () => loadSavedPlaces());
 
 document.getElementById("cleanup-invalid").addEventListener("click", async () => {
-  if (!confirm("حذف المتاجر الخاطئة وكل مكان بدون رقم هاتف سعودي؟")) return;
+  if (!confirm("حذف غير المتعلق بالحيوانات + الخاطئ + بدون هاتف؟")) return;
   const res = await fetch("/api/places/cleanup-invalid", { method: "POST" });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     showToast(data.detail || "تعذّر التنظيف");
     return;
   }
-  showToast(`تم — حذف ${data.deleted ?? 0} · بدون هاتف ${data.deleted_no_phone ?? 0} · إصلاح ${data.fixed ?? 0}`);
+  showToast(`تم — غير حيوانات ${data.deleted_non_pet ?? 0} · حذف ${data.deleted ?? 0} · بدون هاتف ${data.deleted_no_phone ?? 0}`);
   if (data.stats) {
     updateStatCards(data.stats);
     dbCountBadge.textContent = String(data.stats.total ?? 0);
