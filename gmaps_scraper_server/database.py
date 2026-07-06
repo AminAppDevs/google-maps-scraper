@@ -15,6 +15,7 @@ from .dedupe import _normalize_phone, deduplicate_places
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.environ.get("GMAPS_DATA_DIR", str(ROOT / "data")))
 DB_PATH = DATA_DIR / "places.db"
+SEED_PATH = Path("/app/seed/places.db")
 RIYADH_TZ = ZoneInfo("Asia/Riyadh")
 
 
@@ -317,6 +318,52 @@ def update_place(place_id: int, fields: Dict[str, Any]) -> Optional[Dict[str, An
             return None
         row = conn.execute("SELECT * FROM places WHERE id = ?", (place_id,)).fetchone()
     return _row_to_dict(row) if row else None
+
+
+def _place_count() -> int:
+    if not DB_PATH.is_file():
+        return 0
+    with get_connection() as conn:
+        try:
+            return conn.execute("SELECT COUNT(*) AS c FROM places").fetchone()["c"]
+        except sqlite3.OperationalError:
+            return 0
+
+
+def seed_from_bundle(force: bool = False) -> Dict[str, Any]:
+    """Copy bundled seed/places.db into persistent storage."""
+    import shutil
+
+    if not SEED_PATH.is_file():
+        return {
+            "ok": False,
+            "error": "seed file not found in image",
+            "seed_path": str(SEED_PATH),
+            "hint": "Redeploy after committing seed/places.db",
+        }
+
+    init_db()
+    previous = _place_count()
+    if previous > 0 and not force:
+        return {
+            "ok": True,
+            "seeded": False,
+            "skipped": True,
+            "count": previous,
+            "message": "Database already has data; use force=true to replace",
+        }
+
+    shutil.copy2(SEED_PATH, DB_PATH)
+    init_db()
+    count = _place_count()
+    return {
+        "ok": True,
+        "seeded": True,
+        "count": count,
+        "previous_count": previous,
+        "db_path": str(DB_PATH),
+        "seed_path": str(SEED_PATH),
+    }
 
 
 def delete_place(place_id: int) -> bool:

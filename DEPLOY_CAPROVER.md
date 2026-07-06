@@ -13,6 +13,16 @@ Deploy **Waleef Maps Scraper** with Docker + persistent SQLite on CapRover.
 Database path inside the container: **`/captain/data/places.db`**  
 Override with env var: **`GMAPS_DATA_DIR`**
 
+**Seed database:** `seed/places.db` is bundled in the Docker image. On first start (or if DB is empty), it auto-copies **359 places** into `/captain/data/`. Redeploys with existing data do **not** overwrite your live DB.
+
+To refresh the seed before deploy:
+```bash
+./scripts/copy-db-to-seed.sh
+git add seed/places.db
+git commit -m "Update seed database"
+git push
+```
+
 ---
 
 ## 1. Create the app in CapRover
@@ -59,7 +69,7 @@ tar -czf deploy.tar.gz \
   --exclude='output' \
   --exclude='.git' \
   captain-definition Dockerfile requirements.txt setup.py \
-  gmaps_scraper_server scripts
+  seed/places.db gmaps_scraper_server scripts
 
 caprover deploy -t deploy.tar.gz -a waleef-gmaps
 ```
@@ -72,6 +82,7 @@ caprover deploy -t deploy.tar.gz -a waleef-gmaps
 |---------|--------|
 | **Container HTTP Port** | `80` |
 | **Environment** | `GMAPS_DATA_DIR=/captain/data` (default in Dockerfile) |
+| **SEED_ADMIN_KEY** | Any secret string (e.g. `waleef-seed-2026`) — for importing DB without SSH |
 | **Instance count** | `1` (scraping is heavy; avoid multiple instances on one DB) |
 | **RAM** | **2 GB minimum** (Playwright + Chromium) |
 
@@ -79,21 +90,65 @@ Optional health check path: `/health`
 
 ---
 
-## 5. Upload your existing local database (optional)
+## 5. Load your 359 stores (no SSH)
 
-If you already scraped data locally and want it on CapRover:
+### A — Automatic (recommended)
+
+1. Push repo **with** `seed/places.db` (see below)
+2. CapRover → **Force rebuild** → wait for build
+3. **Restart** the app
+
+On start, if the DB is empty, logs show:
+`Seeded database: 359 places copied...`
+
+### B — Manual trigger from your Mac (no SSH)
+
+1. CapRover → App → **App Configs** → **Environment Variables**
+2. Add: `SEED_ADMIN_KEY` = `your-secret-here`
+3. Save & restart
+4. Redeploy must include `seed/places.db` in the Docker image (git push first)
+
+From your Mac terminal:
 
 ```bash
-# 1. Find the running container on your CapRover server (SSH)
-docker ps | grep waleef-gmaps
+# Check status
+curl "https://YOUR-APP.yourdomain.com/api/admin/seed-status?key=your-secret-here"
 
-# 2. Copy local DB into the persistent volume path inside the container
-docker cp ./data/places.db <CONTAINER_ID>:/captain/data/places.db
+# Import seed (empty DB)
+curl -X POST "https://YOUR-APP.yourdomain.com/api/admin/seed-database?key=your-secret-here"
 
-# 3. Restart the app from CapRover dashboard
+# Replace existing empty/wrong DB
+curl -X POST "https://YOUR-APP.yourdomain.com/api/admin/seed-database?key=your-secret-here&force=true"
 ```
 
-Replace `./data/places.db` with your local file path.
+You should get JSON with `"count": 359`.
+
+### Push seed to GitHub first
+
+```bash
+cd /Users/amin/Documents/waleef/gmaps-scraper-local
+./scripts/copy-db-to-seed.sh   # refresh from local data/
+git add seed/places.db
+git commit -m "Add seed database (359 places)"
+git push
+```
+
+Then CapRover **Force rebuild**.
+
+---
+
+## 6. Upload database via SSH (optional)
+
+The image already includes `seed/places.db`. After redeploy + restart, empty servers auto-seed.
+
+**Manual copy** (if you need to force-update without waiting for redeploy):
+
+```bash
+docker ps | grep waleef-gmaps
+docker cp ./seed/places.db <CONTAINER_ID>:/captain/data/places.db
+```
+
+Then restart the app from CapRover.
 
 ---
 

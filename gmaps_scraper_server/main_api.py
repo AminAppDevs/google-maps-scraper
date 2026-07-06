@@ -3,8 +3,9 @@ from typing import Optional, List, Dict, Any, AsyncIterator
 import json
 import logging
 import asyncio
+import os
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Header
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -22,6 +23,7 @@ try:
         update_place,
         delete_place,
         cleanup_invalid_places,
+        seed_from_bundle,
         mark_whatsapp_shared,
         unmark_whatsapp_shared,
         get_stats,
@@ -209,6 +211,47 @@ async def api_delete_place(place_id: int):
     if not delete_place(place_id):
         raise HTTPException(status_code=404, detail="Place not found")
     return {"ok": True, "stats": get_stats()}
+
+
+def _check_seed_admin(key: Optional[str]) -> None:
+    expected = os.environ.get("SEED_ADMIN_KEY", "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="Set SEED_ADMIN_KEY in CapRover env vars first, then call this endpoint",
+        )
+    if not key or key != expected:
+        raise HTTPException(status_code=403, detail="Invalid seed key")
+
+
+@app.get("/api/admin/seed-status")
+async def api_seed_status(key: Optional[str] = Query(None)):
+    """Check DB count and whether seed file exists in the container."""
+    _check_seed_admin(key)
+    from gmaps_scraper_server.database import SEED_PATH, DB_PATH, _place_count
+
+    return {
+        "db_path": str(DB_PATH),
+        "seed_path": str(SEED_PATH),
+        "seed_exists": SEED_PATH.is_file(),
+        "place_count": _place_count(),
+        "stats": get_stats(),
+    }
+
+
+@app.post("/api/admin/seed-database")
+async def api_seed_database(
+    force: bool = Query(False),
+    key: Optional[str] = Query(None),
+    x_seed_key: Optional[str] = Header(None, alias="X-Seed-Key"),
+):
+    """Import bundled seed/places.db — no SSH required."""
+    _check_seed_admin(key or x_seed_key)
+    result = seed_from_bundle(force=force)
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail=result.get("error", "Seed failed"))
+    result["stats"] = get_stats()
+    return result
 
 
 @app.post("/api/places/cleanup-invalid")
