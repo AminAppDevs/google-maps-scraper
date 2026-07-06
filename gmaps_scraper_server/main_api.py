@@ -29,7 +29,7 @@ try:
         unmark_whatsapp_shared,
         get_stats,
     )
-    from gmaps_scraper_server.whatsapp import whatsapp_url, whatsapp_link_parts, whatsapp_desktop_url, build_waleef_message
+    from gmaps_scraper_server.job_manager import job_manager, ScrapeCancelled, ScrapeJob
 except ImportError:
     logging.error("Could not import scraper modules")
 
@@ -127,6 +127,110 @@ def _save_results(results: List[Dict[str, Any]], source_label: str, city: str) -
     if not results:
         return {"inserted": 0, "updated": 0, "total_unique": 0}
     return upsert_places(results, source_label=source_label, city=city)
+
+
+async def _job_run_single(job: ScrapeJob, body: ScrapeRequest) -> None:
+    def on_progress(event: Dict[str, Any]) -> None:
+        job_manager.emit(job, event)
+
+    job_manager.emit(job, {
+        "type": "start",
+        "query": body.query,
+        "message": f"بدء الجمع: {body.query}",
+    })
+    results = await asyncio.wait_for(
+        scrape_google_maps(
+            query=body.query,
+            max_places=body.max_places,
+            lang=body.lang,
+            headless=body.headless,
+            concurrency=body.concurrency,
+            on_progress=on_progress,
+            should_cancel=job.should_cancel,
+        ),
+        timeout=300,
+    )
+    stats = {"raw_count": len(results), "unique_count": len(results), "duplicates_removed": 0}
+    if body.dedupe and results:
+        results, stats = deduplicate_places(results)
+    from gmaps_scraper_server.validation import filter_places_for_saudi
+    results, filter_stats = filter_places_for_saudi(results)
+    stats = {**stats, **filter_stats}
+
+    save_stats = {}
+    if body.save_to_db and results:
+        save_stats = _save_results(results, source_label=body.query, city="")
+
+    logging.info("Scraping finished for %r — %d unique", body.query, len(results))
+    job_manager.emit(job, {
+        "type": "complete",
+        "results_count": len(results),
+        "stats": stats,
+        "save_stats": save_stats,
+        "message": f"تم — {len(results)} مكان تم جمعه",
+    })
+
+
+async def _job_run_city(job: ScrapeJob, body: CityScrapeRequest) -> None:
+    city_name = body.city
+
+    def on_progress(event: Dict[str, Any]) -> None:
+        if event.get("type") == "complete" and body.save_to_db and event.get("results"):
+            event["save_stats"] = _save_results(
+                event["results"],
+                source_label=f"city-scan:{city_name}",
+                city=city_name,
+            )
+        job_manager.emit(job, event)
+
+    await scrape_city_grid(
+        city=body.city,
+        keyword=body.keyword,
+        lang=body.lang,
+        zoom=body.zoom,
+        cell_size_km=body.cell_size_km,
+        max_per_cell=body.max_per_cell,
+        headless=body.headless,
+        concurrency=body.concurrency,
+        include_vet_clinics=body.include_vet_clinics,
+        on_progress=on_progress,
+        should_cancel=job.should_cancel,
+    )
+
+
+@app.get("/api/job/status")
+async def api_job_status():
+    return job_manager.status()
+
+
+@app.get("/api/job/stream")
+async def api_job_stream():
+    async def event_generator() -> AsyncIterator[str]:
+        async for line in job_manager.stream():
+            yield line
+
+    return StreamingResponse(event_generator(), media_type="application/x-ndjson")
+
+
+@app.post("/api/job/stop")
+async def api_job_stop():
+    return await job_manager.stop()
+
+
+@app.post("/api/job/scrape")
+async def api_job_start_scrape(body: ScrapeRequest):
+    if not body.query.strip():
+        raise HTTPException(status_code=400, detail="أدخل كلمة البحث")
+    label = body.query.strip()[:80]
+    return await job_manager.start("single", label, lambda job: _job_run_single(job, body))
+
+
+@app.post("/api/job/scrape-city")
+async def api_job_start_scrape_city(body: CityScrapeRequest):
+    if body.city not in SAUDI_CITIES:
+        raise HTTPException(status_code=400, detail=f"Unknown city. Choose from: {', '.join(SAUDI_CITIES)}")
+    label = f"مسح {body.city}"
+    return await job_manager.start("city", label, lambda job: _job_run_city(job, body))
 
 
 @app.get("/")
@@ -322,56 +426,16 @@ async def run_scrape_api(body: ScrapeRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/scrape/stream")
+async def run_scrape_stream(body: ScrapeRequest):
+    """Start background scrape job (continues if browser closes)."""
+    return await api_job_start_scrape(body)
+
+
 @app.post("/api/scrape-city/stream")
 async def run_scrape_city_stream(body: CityScrapeRequest):
-    if body.city not in SAUDI_CITIES:
-        raise HTTPException(status_code=400, detail=f"Unknown city. Choose from: {', '.join(SAUDI_CITIES)}")
-
-    queue: asyncio.Queue = asyncio.Queue()
-    save_to_db = body.save_to_db
-    city_name = body.city
-
-    def on_progress(event: Dict[str, Any]) -> None:
-        if event.get("type") == "complete" and save_to_db and event.get("results"):
-            save_stats = _save_results(
-                event["results"],
-                source_label=f"city-scan:{city_name}",
-                city=city_name,
-            )
-            event["save_stats"] = save_stats
-        queue.put_nowait(event)
-
-    async def run_job() -> None:
-        try:
-            await scrape_city_grid(
-                city=body.city,
-                keyword=body.keyword,
-                lang=body.lang,
-                zoom=body.zoom,
-                cell_size_km=body.cell_size_km,
-                max_per_cell=body.max_per_cell,
-                headless=body.headless,
-                concurrency=body.concurrency,
-                include_vet_clinics=body.include_vet_clinics,
-                on_progress=on_progress,
-            )
-        except Exception as e:
-            await queue.put({"type": "error", "message": str(e)})
-        finally:
-            await queue.put(None)
-
-    async def event_generator() -> AsyncIterator[str]:
-        task = asyncio.create_task(run_job())
-        try:
-            while True:
-                event = await queue.get()
-                if event is None:
-                    break
-                yield json.dumps(event, ensure_ascii=False) + "\n"
-        finally:
-            await task
-
-    return StreamingResponse(event_generator(), media_type="application/x-ndjson")
+    """Start background city scan job (continues if browser closes)."""
+    return await api_job_start_scrape_city(body)
 
 
 @app.post("/scrape", response_model=List[Dict[str, Any]])

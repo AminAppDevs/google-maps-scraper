@@ -58,6 +58,12 @@ let toastTimer = null;
 let sharingIds = new Set();
 let selectedIds = new Set();
 let loadInFlight = false;
+let scrapeActive = false;
+
+const scrapeLogWrap = document.getElementById("scrape-log-wrap");
+const scrapeLogEl = document.getElementById("scrape-log");
+const stopJobBtn = document.getElementById("stop-job-btn");
+let jobStreamAbort = null;
 
 const bulkBar = document.getElementById("bulk-bar");
 const bulkCountEl = document.getElementById("bulk-count");
@@ -80,7 +86,9 @@ function startLivePoll() {
   stopLivePoll();
   document.getElementById("live-indicator").classList.remove("hidden");
   pollTimer = setInterval(() => {
-    if (isResultsVisible() && sharingIds.size === 0) loadSavedPlaces({ silent: true });
+    if (isResultsVisible() && sharingIds.size === 0 && !scrapeActive) {
+      loadSavedPlaces({ silent: true });
+    }
   }, 3000);
 }
 
@@ -142,6 +150,182 @@ function hideProgress() {
   progressFill.style.width = "0%";
 }
 
+function clearScrapeLog() {
+  scrapeLogEl.innerHTML = "";
+  scrapeLogWrap.classList.add("hidden");
+}
+
+function appendScrapeLog(message, level = "info", ts = null) {
+  scrapeLogWrap.classList.remove("hidden");
+  const li = document.createElement("li");
+  const time = (ts ? new Date(ts * 1000) : new Date()).toLocaleTimeString("ar-SA", {
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+  li.className = `log-${level}`;
+  li.innerHTML = `<time>${time}</time>${escapeHtml(message)}`;
+  scrapeLogEl.appendChild(li);
+  scrapeLogEl.scrollTop = scrapeLogEl.scrollHeight;
+}
+
+function updateJobUI(running, status = {}) {
+  scrapeActive = running;
+  submitBtn.disabled = running;
+  stopJobBtn.classList.toggle("hidden", !running);
+  stopJobBtn.disabled = !running;
+  if (running && status.label) {
+    setStatus(`جاري التنفيذ: ${status.label}`, "loading");
+  }
+}
+
+function logJobEvent(event) {
+  if (!event?.message) return;
+  const level =
+    event.type === "error" ? "error"
+    : event.type === "warning" || event.type === "cancelled" ? "warn"
+    : event.type === "complete" || event.type === "start" ? "ok"
+    : "info";
+  appendScrapeLog(event.message, level, event.ts);
+}
+
+function handleJobEvent(event, handlers) {
+  if (event.type === "idle" || event.type === "heartbeat" || event.type === "_end") return null;
+  if (["start", "progress", "warning", "error", "complete", "cancelled"].includes(event.type)) {
+    logJobEvent(event);
+  }
+  if (event.type === "start") handlers.onStart?.(event);
+  else if (event.type === "progress" || event.type === "warning") handlers.onProgress?.(event);
+  else if (event.type === "error") throw new Error(event.message || "فشل الجمع");
+  else if (event.type === "complete" || event.type === "cancelled") {
+    handlers.onComplete?.(event);
+    return event;
+  }
+  return null;
+}
+
+async function followJobStream(handlers) {
+  if (jobStreamAbort) jobStreamAbort.abort();
+  jobStreamAbort = new AbortController();
+
+  const res = await fetch("/api/job/stream", { signal: jobStreamAbort.signal }).catch((err) => {
+    if (err.name === "AbortError") return null;
+    throw new Error(formatFetchError(err));
+  });
+  if (!res) return null;
+  if (!res.ok) throw new Error(formatFetchError(new Error(`HTTP ${res.status}`), res));
+  if (!res.body) throw new Error("لا يوجد استجابة من الخادم");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let terminal = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let event;
+      try {
+        event = JSON.parse(line);
+      } catch {
+        appendScrapeLog(`استجابة غير صالحة: ${line.slice(0, 80)}`, "warn");
+        continue;
+      }
+      const result = handleJobEvent(event, handlers);
+      if (result) terminal = result;
+    }
+  }
+
+  if (terminal) return terminal;
+
+  const status = await fetch("/api/job/status").then((r) => r.json()).catch(() => ({ status: "idle" }));
+  if (status.running) return followJobStream(handlers);
+  return terminal;
+}
+
+async function startJob(url, body, handlers) {
+  if (jobStreamAbort) jobStreamAbort.abort();
+  clearScrapeLog();
+  progressWrap.classList.remove("hidden");
+  setProgress(0, 1, "جاري البدء…");
+
+  const startRes = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).catch((err) => {
+    throw new Error(formatFetchError(err));
+  });
+
+  if (!startRes.ok) {
+    const err = await startRes.json().catch(() => ({}));
+    throw new Error(formatFetchError(new Error(err.detail || "فشل بدء العملية"), startRes));
+  }
+
+  const job = await startRes.json();
+  updateJobUI(true, job);
+  return followJobStream(handlers);
+}
+
+function finishJobUI(event) {
+  updateJobUI(false);
+  hideProgress();
+  if (jobStreamAbort) {
+    jobStreamAbort.abort();
+    jobStreamAbort = null;
+  }
+  if (!event) return;
+
+  if (event.type === "cancelled") {
+    setStatus(event.message || "تم إيقاف العملية", "error");
+    return;
+  }
+
+  if (event.type === "complete") {
+    const n = event.results_count ?? event.stats?.unique_count ?? 0;
+    const saved = event.save_stats;
+    let msg = event.message || `تم — ${n} مكان`;
+    if (saved) msg += ` · قاعدة البيانات: ${saved.inserted} جديد، ${saved.updated} محدّث`;
+    if (event.kind === "single" && n === 0) msg += " — تحقق من السجل (قد تكون صفحة موافقة Google)";
+    setStatus(msg, n > 0 || event.save_stats ? "success" : "error");
+    currentPage = 1;
+    switchToResultsTab();
+  }
+}
+
+const singleJobHandlers = {
+  onStart: () => setProgress(0, 1, "بدء الجمع…"),
+  onProgress: (e) => {
+    if (e.found) setProgress(1, 1, `تم العثور على ${e.found} رابط…`);
+    else setProgress(0, 1, e.message || "جاري التنفيذ…");
+  },
+  onComplete: () => {},
+};
+
+const cityJobHandlers = {
+  onStart: (e) => setProgress(0, e.total_steps || 1, e.message),
+  onProgress: (e) => {
+    if (e.step && e.total_steps) setProgress(e.step, e.total_steps, e.message);
+    if (isResultsVisible()) loadSavedPlaces({ silent: true });
+  },
+  onComplete: () => {},
+};
+
+function formatFetchError(err, res = null) {
+  const msg = String(err?.message || err || "");
+  if (msg.includes("Failed to fetch") || msg.includes("NetworkError") || msg.includes("Load failed")) {
+    if (res?.status === 504) return "انتهت مهلة الخادم — الجمع يستغرق وقتاً طويلاً. حاول مرة أخرى أو قلّل النتائج.";
+    return "خطأ شبكة — انقطع الاتصال بالخادم. تحقق من الإنترنت أو أعد المحاولة.";
+  }
+  if (res?.status === 502 || res?.status === 503) return "الخادم غير متاح مؤقتاً (502/503) — انتظر وأعد المحاولة.";
+  if (res?.status === 504) return "انتهت مهلة الخادم بعد 5 دقائق.";
+  return msg || "حدث خطأ غير متوقع";
+}
+
 function escapeHtml(str) {
   return String(str)
     .replace(/&/g, "&amp;")
@@ -178,27 +362,11 @@ async function scrapeSingle() {
   const maxPlaces = parseInt(document.getElementById("max-places").value, 10) || 120;
   const lang = document.getElementById("lang").value;
 
-  setStatus("جاري الجمع… سيتم الحفظ في قاعدة البيانات عند الانتهاء.", "loading");
-
-  const res = await fetch("/api/scrape", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      query, max_places: maxPlaces, lang,
-      headless: true, concurrency: 5, dedupe: true, save_to_db: true,
-    }),
-  });
-
-  const data = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(data?.detail || "فشل الطلب");
-
-  const n = data.results?.length ?? 0;
-  const saved = data.save_stats;
-  let msg = `تم — ${n} مكان تم جمعه.`;
-  if (saved) msg += ` قاعدة البيانات: ${saved.inserted} جديد، ${saved.updated} محدّث.`;
-  setStatus(msg, "success");
-  currentPage = 1;
-  switchToResultsTab();
+  const event = await startJob("/api/job/scrape", {
+    query, max_places: maxPlaces, lang,
+    headless: true, concurrency: 5, dedupe: true, save_to_db: true,
+  }, singleJobHandlers);
+  finishJobUI(event);
 }
 
 async function scrapeCityStream() {
@@ -209,74 +377,62 @@ async function scrapeCityStream() {
   const cellSize = parseFloat(document.getElementById("cell-size").value) || 4;
   const includeVet = document.getElementById("include-vet").checked;
 
-  setStatus(`جاري مسح ${cityLabel(city)}… النتائج تُحفظ تلقائياً.`, "loading");
-  setProgress(0, 1, "جاري البدء…");
-
-  const res = await fetch("/api/scrape-city/stream", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      city, keyword, lang, zoom, cell_size_km: cellSize,
-      max_per_cell: 120, headless: true, concurrency: 5,
-      include_vet_clinics: includeVet, save_to_db: true,
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || "فشل مسح المدينة");
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
-
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      const event = JSON.parse(line);
-
-      if (event.type === "start") setProgress(0, event.total_steps, event.message);
-      else if (event.type === "progress") {
-        setProgress(event.step, event.total_steps, event.message);
-        if (isResultsVisible()) loadSavedPlaces({ silent: true });
-      } else if (event.type === "error") throw new Error(event.message);
-      else if (event.type === "complete") {
-        hideProgress();
-        let msg = event.message;
-        if (event.save_stats) {
-          msg += ` · قاعدة البيانات: ${event.save_stats.inserted} جديد، ${event.save_stats.updated} محدّث`;
-        }
-        setStatus(msg, "success");
-        currentPage = 1;
-        switchToResultsTab();
-        return;
-      }
-    }
-  }
-  throw new Error("انتهى مسح المدينة بشكل غير متوقع");
+  const event = await startJob("/api/job/scrape-city", {
+    city, keyword, lang, zoom, cell_size_km: cellSize,
+    max_per_cell: 120, headless: true, concurrency: 5,
+    include_vet_clinics: includeVet, save_to_db: true,
+  }, cityJobHandlers);
+  finishJobUI(event);
 }
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
-  submitBtn.disabled = true;
-  hideProgress();
   try {
     if (currentMode === "city") await scrapeCityStream();
     else await scrapeSingle();
   } catch (err) {
-    hideProgress();
-    setStatus(err.message || "حدث خطأ ما.", "error");
-  } finally {
-    submitBtn.disabled = false;
+    finishJobUI(null);
+    const msg = formatFetchError(err);
+    appendScrapeLog(msg, "error");
+    setStatus(msg, "error");
   }
 });
+
+stopJobBtn.addEventListener("click", async () => {
+  stopJobBtn.disabled = true;
+  appendScrapeLog("طلب إيقاف العملية…", "warn");
+  try {
+    await fetch("/api/job/stop", { method: "POST" });
+  } catch {
+    appendScrapeLog("تعذّر إرسال طلب الإيقاف", "error");
+    stopJobBtn.disabled = false;
+  }
+});
+
+async function tryReconnectActiveJob() {
+  try {
+    const status = await fetch("/api/job/status").then((r) => r.json());
+    if (!status.id || status.status === "idle") return;
+
+    scrapeLogWrap.classList.remove("hidden");
+    if (status.running) {
+      document.querySelector('.main-tab[data-panel="scrape-panel"]')?.click();
+      updateJobUI(true, status);
+      setProgress(status.step || 0, status.total_steps || 1, status.message || "جاري التنفيذ…");
+    } else {
+      appendScrapeLog(`آخر عملية: ${status.label} (${status.status})`, "info");
+    }
+
+    const handlers = status.kind === "city" ? cityJobHandlers : singleJobHandlers;
+    const event = await followJobStream(handlers);
+    finishJobUI(event);
+  } catch (err) {
+    if (err.name !== "AbortError") {
+      updateJobUI(false);
+      appendScrapeLog(formatFetchError(err), "error");
+    }
+  }
+}
 
 function flattenPlace(p) {
   return {
@@ -785,3 +941,4 @@ document.addEventListener("keydown", (e) => {
 });
 
 loadSavedPlaces();
+tryReconnectActiveJob();

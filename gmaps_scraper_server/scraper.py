@@ -4,11 +4,13 @@ import re
 import random
 import logging
 import os
+from typing import Callable, Optional
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 from urllib.parse import urlencode
 
 # Import the extraction functions from our helper module
 from . import extractor
+from .job_manager import ScrapeCancelled
 
 # --- Logging Configuration ---
 logger = logging.getLogger(__name__)
@@ -29,6 +31,107 @@ USER_AGENTS = [
 def random_delay(min_sec=1.0, max_sec=2.0):
     """Returns random delay for anti-detection"""
     return random.uniform(min_sec, max_sec)
+
+
+CONSENT_SELECTORS = [
+    "#L2AGLb",
+    "button[jsname='b3VHJd']",
+    "button[aria-label='Alle akzeptieren']",
+    "button[aria-label='Accept all']",
+    "button[aria-label='I agree']",
+    "button[aria-label='Aceptar todo']",
+    "button[aria-label='Tout accepter']",
+    "button[aria-label='Accetta tutto']",
+    "button[aria-label='قبول الكل']",
+    "button[aria-label='أوافق']",
+    "button[aria-label='موافق']",
+    "button[aria-label='الموافقة على الكل']",
+]
+
+CONSENT_BUTTON_NAMES = [
+    "Accept all", "I agree", "Agree",
+    "Alle akzeptieren", "Aceptar todo", "Tout accepter", "Accetta tutto",
+    "قبول الكل", "أوافق", "موافق", "الموافقة على الكل",
+]
+
+
+async def _emit_progress(on_progress, event_type: str, message: str, **extra) -> None:
+    if on_progress:
+        on_progress({"type": event_type, "message": message, **extra})
+
+
+def _check_cancel(should_cancel: Optional[Callable[[], bool]]) -> None:
+    if should_cancel and should_cancel():
+        raise ScrapeCancelled()
+
+
+async def handle_google_consent(page, lang: str = "en") -> bool:
+    """Dismiss Google consent / terms interstitial if shown."""
+    handled = False
+    for attempt in range(4):
+        url = page.url or ""
+        title = await page.title()
+        on_consent_host = "consent.google" in url
+        on_consent_title = "consent" in title.lower() or "قبل المتابعة" in title or "Before you continue" in title
+
+        if not on_consent_host and not on_consent_title:
+            if attempt == 0:
+                return handled
+            break
+
+        logger.info("Consent page detected (attempt %s) url=%s title=%s", attempt + 1, url, title)
+        clicked = False
+
+        for selector in CONSENT_SELECTORS:
+            try:
+                loc = page.locator(selector)
+                if await loc.count() > 0 and await loc.first.is_visible():
+                    await loc.first.click(timeout=4000)
+                    clicked = True
+                    logger.info("Clicked consent via selector: %s", selector)
+                    break
+            except Exception as exc:
+                logger.debug("Consent selector %s failed: %s", selector, exc)
+
+        if not clicked:
+            for name in CONSENT_BUTTON_NAMES:
+                try:
+                    button = page.get_by_role("button", name=name, exact=False)
+                    if await button.count() > 0:
+                        await button.first.click(timeout=4000)
+                        clicked = True
+                        logger.info("Clicked consent via button name: %s", name)
+                        break
+                except Exception as exc:
+                    logger.debug("Consent button name %s failed: %s", name, exc)
+
+        if not clicked:
+            try:
+                buttons = page.locator("form[action*='consent'] button, form button")
+                if await buttons.count() > 0:
+                    await buttons.first.click(timeout=4000)
+                    clicked = True
+                    logger.info("Clicked first consent form button")
+            except Exception as exc:
+                logger.debug("Consent form button fallback failed: %s", exc)
+
+        if not clicked:
+            logger.warning("Could not find consent accept button (lang=%s)", lang)
+            break
+
+        handled = True
+        await asyncio.sleep(random_delay(1.5, 2.5))
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=15000)
+        except PlaywrightTimeoutError:
+            pass
+        await asyncio.sleep(random_delay(1.0, 2.0))
+
+        if "consent.google" not in (page.url or ""):
+            logger.info("Consent dismissed — now at %s", page.url)
+            return True
+
+    return handled
 
 # --- Helper Functions ---
 def create_search_url(query, lang="en", lat=None, lng=None, zoom=None):
@@ -96,6 +199,8 @@ async def scrape_google_maps(
     lng=None,
     zoom=15,
     filter_city=None,
+    on_progress=None,
+    should_cancel=None,
 ):
     """
     Scrapes Google Maps for places based on a query.
@@ -130,10 +235,13 @@ async def scrape_google_maps(
                 ]
             )
             context = await browser.new_context(
-                user_agent=random.choice(USER_AGENTS),  # Random user agent for anti-detection
+                user_agent=random.choice(USER_AGENTS),
                 java_script_enabled=True,
                 accept_downloads=False,
-                locale=lang,
+                locale=f"{lang}-SA" if lang == "ar" else lang,
+                timezone_id="Asia/Riyadh",
+                geolocation={"latitude": 24.7136, "longitude": 46.6753},
+                permissions=["geolocation"],
             )
             
             # --- Step 1: Navigate to Google Maps and perform search ---
@@ -146,98 +254,38 @@ async def scrape_google_maps(
             if lat is not None and lng is not None:
                 search_url = create_search_url(query, lang=lang, lat=lat, lng=lng, zoom=zoom)
                 logger.info("Navigating to geo search: %s", search_url)
+                await _emit_progress(on_progress, "progress", f"فتح خرائط Google — {query}")
                 await page.goto(search_url, wait_until='domcontentloaded')
                 await asyncio.sleep(random_delay(3.0, 4.0))
             else:
-                # Navigate to Google Maps homepage first (more natural, avoids sidebar issues)
                 logger.info("Navigating to Google Maps homepage...")
+                await _emit_progress(on_progress, "progress", "فتح صفحة خرائط Google…")
                 await page.goto('https://www.google.com/maps', wait_until='domcontentloaded')
-                await asyncio.sleep(random_delay(2.0, 3.0))  # Give page time to fully load
+                await asyncio.sleep(random_delay(2.0, 3.0))
 
-            # --- Handle Terms of Service / Consent pages ---
             logger.info("Checking for consent/terms page...")
-            consent_handled = False
-
-            try:
-                consent_selectors = [
-                    # German
-                    'button[aria-label="Alle akzeptieren"]',  # German accept
-                    'button[aria-label="Alle ablehnen"]',     # German reject
-                    # English
-                    'button[aria-label="I agree"]',           # English accept
-                    'button[aria-label="I reject"]',          # English reject
-                    'button[aria-label="Accept all"]',        # English accept
-                    'button[aria-label="Reject all"]',        # English reject
-                    # Spanish
-                    'button[aria-label="Aceptar todo"]',      # Spanish accept
-                    'button[aria-label="Rechazar todo"]',     # Spanish reject
-                    # French (correct order: "Tout accepter", "Tout refuser")
-                    'button[aria-label="Tout accepter"]',     # French accept
-                    'button[aria-label="Tout refuser"]',      # French reject
-                    # Italian
-                    'button[aria-label="Accetta tutto"]',     # Italian accept
-                    'button[aria-label="Rifiuta tutto"]',     # Italian reject
-                    # Dutch
-                    'button[aria-label="Alles accepteren"]',  # Dutch accept
-                    'button[aria-label="Alles afwijzen"]',    # Dutch reject
-                    # Portuguese
-                    'button[aria-label="Aceitar tudo"]',      # Portuguese accept
-                    'button[aria-label="Recusar tudo"]',      # Portuguese reject
-                    # Polish
-                    'button[aria-label="Zaakceptuj wszystko"]', # Polish accept
-                    'button[aria-label="Odrzuć wszystko"]',    # Polish reject
-                    # Swedish
-                    'button[aria-label="Godkänn alla"]',      # Swedish accept
-                    'button[aria-label="Avvisa alla"]',       # Swedish reject
-                    # Danish
-                    'button[aria-label="Acceptér alle"]',     # Danish accept
-                    'button[aria-label="Afvis alle"]',        # Danish reject
-                    # Norwegian
-                    'button[aria-label="Godta alle"]',        # Norwegian accept
-                    'button[aria-label="Avvis alle"]',        # Norwegian reject
-                    # Greek
-                    'button[aria-label="Αποδοχή όλων"]',      # Greek accept
-                    'button[aria-label="Απόρριψη όλων"]',     # Greek reject
-                    # Turkish
-                    'button[aria-label="Tümünü kabul et"]',   # Turkish accept
-                    'button[aria-label="Tümünü reddet"]',     # Turkish reject
-                ]
-                
-                consent_button = None
-                for selector in consent_selectors:
-                    try:
-                        consent_button = await page.wait_for_selector(selector, state='visible', timeout=3000)
-                        if consent_button:
-                            logger.info(f"Found consent page - clicking accept/reject button with selector: {selector}")
-                            await consent_button.click()
-                            consent_handled = True
-                            await asyncio.sleep(random_delay(1.0, 2.0))  # Wait for navigation
-                            break
-                    except Exception as e:
-                        logger.debug(f"Selector '{selector}' not found: {e}")
-                        continue
-                    
-            except PlaywrightTimeoutError:
-                logger.debug("No consent page detected or timed out waiting.")
-            except Exception as e:
-                logger.warning(f"Error handling consent page: {e}")
-            
-            # If consent was handled, wait for the page to stabilize
+            await _emit_progress(on_progress, "progress", "التحقق من صفحة الموافقة…")
+            _check_cancel(should_cancel)
+            consent_handled = await handle_google_consent(page, lang=lang)
             if consent_handled:
+                await _emit_progress(on_progress, "progress", "تم تجاوز صفحة الموافقة ✓")
                 await asyncio.sleep(random_delay(2.0, 3.0))
 
             # --- Search box (skip when using geo URL — query is already in URL) ---
             if lat is None or lng is None:
                 logger.info(f"Typing search query: {query}")
+                await _emit_progress(on_progress, "progress", f"البحث عن: {query}")
                 try:
                     search_box_selectors = [
+                        'input[id="searchboxinput"]',
                         'input[name="q"]',
                         'input[role="combobox"]',
                         'input[aria-controls="ucc-0"]',
-                        'input[id="searchboxinput"]',
                         'input[aria-label*="Search"]',
+                        'input[aria-label*="بحث"]',
                         'input[aria-label*="suchen"]',
                         'input[placeholder*="Search"]',
+                        'input[placeholder*="بحث"]',
                         'input[placeholder*="Suchen"]',
                     ]
 
@@ -254,6 +302,10 @@ async def scrape_google_maps(
                             continue
 
                     if not search_box:
+                        if "consent.google" in (page.url or ""):
+                            await _emit_progress(on_progress, "error", "عالق في صفحة موافقة Google — لم يتم العثور على زر القبول")
+                        else:
+                            await _emit_progress(on_progress, "error", "لم يتم العثور على مربع البحث في خرائط Google")
                         logger.error("Could not find search box on Google Maps")
                         logger.error("Page title: %s", await page.title())
                         logger.error("Page URL: %s", page.url)
@@ -264,22 +316,24 @@ async def scrape_google_maps(
                     await asyncio.sleep(random_delay(0.5, 1.0))
                     await page.keyboard.press('Enter')
                     logger.info("Search submitted, waiting for results...")
+                    await _emit_progress(on_progress, "progress", "تم إرسال البحث — انتظار النتائج…")
                     await asyncio.sleep(random_delay(3.0, 4.0))
 
                 except Exception as e:
                     logger.error(f"Error performing search: {e}")
+                    await _emit_progress(on_progress, "error", f"خطأ أثناء البحث: {e}")
                     await browser.close()
                     return []
             else:
-                # Re-load geo URL after consent if needed
                 if consent_handled:
                     search_url = create_search_url(query, lang=lang, lat=lat, lng=lng, zoom=zoom)
                     await page.goto(search_url, wait_until='domcontentloaded')
                     await asyncio.sleep(random_delay(2.0, 3.0))
-
+                    await handle_google_consent(page, lang=lang)
 
             # --- Scrolling and Link Extraction ---
             logger.info("Scrolling to load places...")
+            await _emit_progress(on_progress, "progress", "تمرير القائمة لجمع الأماكن…")
             feed_selector = '[role="feed"]'
             found_feed = False
 
@@ -303,13 +357,15 @@ async def scrape_google_maps(
                         place_links.update(links)
                         # We won't be able to scroll effectively, but we have visible links
                     else:
-                        logger.error(f"Error: Feed element not found. Page content may be unexpected.")
+                        logger.error("Error: Feed element not found. Page content may be unexpected.")
+                        await _emit_progress(on_progress, "error", "لم تُعثر على نتائج — قد تكون صفحة الموافقة أو البحث فارغاً")
                         await browser.close()
                         return []
 
             if found_feed and await page.locator(feed_selector).count() > 0:
                 last_height = await page.evaluate(f'document.querySelector(\'{feed_selector}\').scrollHeight')
                 while True:
+                    _check_cancel(should_cancel)
                     # Incremental scroll (more reliable than jumping to bottom)
                     await page.evaluate(f'''() => {{
                         const feed = document.querySelector('{feed_selector}');
@@ -353,8 +409,16 @@ async def scrape_google_maps(
             # Close the search page as we have the links now
             await page.close()
 
+            _check_cancel(should_cancel)
+
             # --- Step 2: Scraping Individual Places in Parallel ---
             logger.info(f"Scraping details for {len(place_links)} places with concurrency {concurrency}...")
+            await _emit_progress(
+                on_progress,
+                "progress",
+                f"جمع تفاصيل {len(place_links)} مكان…",
+                found=len(place_links),
+            )
 
             semaphore = asyncio.Semaphore(concurrency)
             tasks = [scrape_place_details(context, link, semaphore)
@@ -377,6 +441,9 @@ async def scrape_google_maps(
 
             await browser.close()
 
+        except ScrapeCancelled:
+            logger.info("Scrape cancelled by user")
+            raise
         except PlaywrightTimeoutError:
             logger.error("Timeout error during scraping process.")
             raise

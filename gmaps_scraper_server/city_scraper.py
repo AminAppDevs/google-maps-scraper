@@ -5,6 +5,7 @@ import asyncio
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
+from .job_manager import ScrapeCancelled
 from .dedupe import deduplicate_places
 from .grid import SAUDI_CITIES, bbox_from_tuple, generate_grid
 from .scraper import scrape_google_maps
@@ -62,6 +63,7 @@ async def scrape_city_grid(
     include_vet_clinics: bool = True,
     pause_between_searches_sec: float = 3.0,
     on_progress: Optional[ProgressCallback] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """
     Scan a city using a geographic grid with zoomed searches.
@@ -97,6 +99,8 @@ async def scrape_city_grid(
 
     for kw_idx, kw in enumerate(search_keywords):
         for cell in cells:
+            if should_cancel and should_cancel():
+                raise ScrapeCancelled()
             step += 1
             emit({
                 "type": "progress",
@@ -122,9 +126,12 @@ async def scrape_city_grid(
                     lng=cell.lon,
                     zoom=zoom,
                     filter_city=city,
+                    should_cancel=should_cancel,
                 )
                 all_places.extend(batch)
                 logger.info("Cell (%s,%s) keyword %r -> %d places (raw total %d)", cell.row, cell.col, kw, len(batch), len(all_places))
+            except ScrapeCancelled:
+                raise
             except Exception as e:
                 logger.warning("Cell scrape failed: %s", e)
                 emit({
@@ -133,8 +140,13 @@ async def scrape_city_grid(
                     "message": f"فشلت المنطقة {step}: {e}",
                 })
 
+            if should_cancel and should_cancel():
+                raise ScrapeCancelled()
             if step < total_steps and pause_between_searches_sec > 0:
                 await asyncio.sleep(pause_between_searches_sec)
+
+    if should_cancel and should_cancel():
+        raise ScrapeCancelled()
 
     unique, dedupe_stats = deduplicate_places(all_places)
     unique, filter_stats = filter_places_for_saudi(unique, city=city)

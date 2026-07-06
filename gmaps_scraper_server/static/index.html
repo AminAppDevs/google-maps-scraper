@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/style.css?v=7" />
+  <link rel="stylesheet" href="/static/style.css?v=9" />
 </head>
 <body>
   <div class="page">
@@ -113,15 +113,25 @@
             </label>
           </div>
 
-          <button type="submit" id="submit-btn" class="primary">
-            <span data-icon="bolt"></span>
-            <span id="submit-label">بدء الجمع</span>
-          </button>
+          <div class="scrape-actions">
+            <button type="submit" id="submit-btn" class="primary">
+              <span data-icon="bolt"></span>
+              <span id="submit-label">بدء الجمع</span>
+            </button>
+            <button type="button" id="stop-job-btn" class="danger hidden">
+              <span data-icon="tab-close"></span> إيقاف
+            </button>
+          </div>
         </form>
 
         <div id="progress-wrap" class="progress-wrap hidden">
           <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
           <p id="progress-text" class="progress-text"></p>
+        </div>
+
+        <div id="scrape-log-wrap" class="scrape-log-wrap hidden">
+          <p class="scrape-log-title"><span data-icon="clipboard"></span> سجل العملية</p>
+          <ul id="scrape-log" class="scrape-log" aria-live="polite"></ul>
         </div>
 
         <div id="status" class="status hidden" aria-live="polite"></div>
@@ -303,6 +313,6 @@
       · تخزين SQLite · تواصل واتساب لوليف
     </footer>
   </div>
-  <script type="module" src="/static/app.js?v=12"></script>
+  <script type="module" src="/static/app.js?v=14"></script>
 </body>
 </html>
