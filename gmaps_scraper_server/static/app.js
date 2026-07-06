@@ -462,13 +462,13 @@ function renderSavedTable(places, highlightId = null) {
       <td>${statusBadge}</td>
       <td>${escapeHtml(p.name || "—")}</td>
       <td dir="ltr">${escapeHtml(p.phone || "—")}</td>
-      <td>${escapeHtml(p.address || "—")}</td>
+      <td dir="ltr">${escapeHtml(p.email || "—")}</td>
       <td>${escapeHtml(cityLabel(p.city))}</td>
       <td>${waCell}</td>
       <td>
         <div class="row-actions">
           <button type="button" class="icon-btn icon-btn-edit" title="تعديل" aria-label="تعديل">${icon("pen")}</button>
-          <button type="button" class="icon-btn icon-btn-delete" title="حذف" aria-label="حذف">${icon("tab-close")}</button>
+          <button type="button" class="icon-btn icon-btn-delete" title="حذف" aria-label="حذف">${icon("trash")}</button>
         </div>
       </td>
     `;
@@ -487,6 +487,7 @@ function openEditModal(place) {
   document.getElementById("edit-id").value = place.id;
   document.getElementById("edit-name").value = place.name || "";
   document.getElementById("edit-phone").value = place.phone || "";
+  document.getElementById("edit-email").value = place.email || "";
   document.getElementById("edit-address").value = place.address || "";
   document.getElementById("edit-city").value = place.city || "";
   document.getElementById("edit-shared").checked = Boolean(place.whatsapp_shared);
@@ -505,6 +506,7 @@ async function saveEditPlace(e) {
   const payload = {
     name: document.getElementById("edit-name").value.trim(),
     phone: document.getElementById("edit-phone").value.trim() || null,
+    email: document.getElementById("edit-email").value.trim() || null,
     address: document.getElementById("edit-address").value.trim() || null,
     city: document.getElementById("edit-city").value || null,
     whatsapp_shared: document.getElementById("edit-shared").checked,
@@ -604,6 +606,24 @@ pageNextBtn.addEventListener("click", () => {
 });
 
 document.getElementById("refresh-results").addEventListener("click", () => loadSavedPlaces());
+
+document.getElementById("cleanup-invalid").addEventListener("click", async () => {
+  if (!confirm("حذف المتاجر الخاطئة وكل مكان بدون رقم هاتف سعودي؟")) return;
+  const res = await fetch("/api/places/cleanup-invalid", { method: "POST" });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    showToast(data.detail || "تعذّر التنظيف");
+    return;
+  }
+  showToast(`تم — حذف ${data.deleted ?? 0} · بدون هاتف ${data.deleted_no_phone ?? 0} · إصلاح ${data.fixed ?? 0}`);
+  if (data.stats) {
+    updateStatCards(data.stats);
+    dbCountBadge.textContent = String(data.stats.total ?? 0);
+    resultsStatsLine.textContent = formatStatsLine(data.stats);
+  }
+  await loadSavedPlaces();
+});
+
 document.getElementById("filter-status").addEventListener("change", () => {
   currentPage = 1;
   loadSavedPlaces();

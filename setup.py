@@ -7,6 +7,7 @@ setup(
     install_requires=[
         "playwright",
         "fastapi",
-        "uvicorn[standard]"
+        "uvicorn[standard]",
+        "tzdata",
     ],
 )

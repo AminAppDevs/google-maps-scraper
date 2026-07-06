@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Optional
 from .dedupe import deduplicate_places
 from .grid import SAUDI_CITIES, bbox_from_tuple, generate_grid
 from .scraper import scrape_google_maps
+from .validation import filter_places_for_saudi
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,7 @@ async def scrape_city_grid(
                     lat=cell.lat,
                     lng=cell.lon,
                     zoom=zoom,
+                    filter_city=city,
                 )
                 all_places.extend(batch)
                 logger.info("Cell (%s,%s) keyword %r -> %d places (raw total %d)", cell.row, cell.col, kw, len(batch), len(all_places))
@@ -131,12 +133,14 @@ async def scrape_city_grid(
                 await asyncio.sleep(pause_between_searches_sec)
 
     unique, dedupe_stats = deduplicate_places(all_places)
+    unique, filter_stats = filter_places_for_saudi(unique, city=city)
 
     result = {
         "type": "complete",
         "results": unique,
         "stats": {
             **dedupe_stats,
+            **filter_stats,
             "city": city,
             "cells_scanned": len(cells),
             "keywords": search_keywords,

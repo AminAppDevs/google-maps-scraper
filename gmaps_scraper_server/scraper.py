@@ -95,6 +95,7 @@ async def scrape_google_maps(
     lat=None,
     lng=None,
     zoom=15,
+    filter_city=None,
 ):
     """
     Scrapes Google Maps for places based on a query.
@@ -364,6 +365,15 @@ async def scrape_google_maps(
             
             # Filter out None results (failed scrapes)
             results = [r for r in scraped_results if r is not None]
+
+            from .validation import filter_places_for_saudi
+            results, filter_stats = filter_places_for_saudi(results, city=filter_city)
+            if filter_stats.get("filtered_out"):
+                logger.info(
+                    "Filtered %d invalid/foreign places (kept %d)",
+                    filter_stats["filtered_out"],
+                    filter_stats["kept_count"],
+                )
 
             await browser.close()
 

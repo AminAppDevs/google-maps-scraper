@@ -687,9 +687,14 @@ tbody tr:hover {
   border-color: rgba(91, 108, 255, 0.35);
 }
 
+.icon-btn-delete {
+  color: #b91c1c;
+}
+
 .icon-btn-delete:hover {
   background: rgba(220, 38, 38, 0.12);
   border-color: rgba(220, 38, 38, 0.3);
+  color: #991b1b;
 }
 
 .modal {

@@ -15,20 +15,8 @@ EMOJI_GIFT = "\U0001F381"       # 🎁
 
 def normalize_phone_for_whatsapp(phone: Optional[str]) -> Optional[str]:
     """Return digits only with Saudi country code for wa.me links."""
-    if not phone:
-        return None
-    digits = re.sub(r"\D", "", phone)
-    if not digits:
-        return None
-    if digits.startswith("966"):
-        return digits
-    if digits.startswith("0"):
-        return "966" + digits[1:]
-    if len(digits) == 9 and digits[0] == "5":
-        return "966" + digits
-    if len(digits) >= 10:
-        return digits
-    return "966" + digits
+    from .validation import normalize_saudi_phone
+    return normalize_saudi_phone(phone)
 
 
 def clean_store_name(name: Optional[str]) -> str:

@@ -210,22 +210,74 @@ def get_gps_coordinates(html_content, metadata):
 
 def get_complete_address(html_content):
     """Extracts the complete address from HTML."""
-    # STABLE: Try semantic selectors first (accessibility attributes)
     patterns = [
-        r'aria-label="Address:\s*([^"]+)"',  # HIGHLY STABLE - accessibility required
-        r'data-item-id="address"[^>]*aria-label="([^"]+)"',  # STABLE - semantic + aria-label
-        r'button[^>]*data-item-id="address"[^>]*>([^<]+)<',  # STABLE - semantic selector
-        r'"formatted_address"\s*:\s*"([^"]+)"',  # MODERATE - JSON-like pattern
-        r'button[^>]*aria-label="[^"]*([0-9]+[^",]{15,80})"',  # MODERATE - generic pattern
+        r'aria-label="Address:\s*([^"]+)"',
+        r'data-item-id="address"[^>]*aria-label="([^"]+)"',
+        r'button[^>]*data-item-id="address"[^>]*>([^<]+)<',
+        r'"formatted_address"\s*:\s*"([^"]+)"',
     ]
 
     for pattern in patterns:
         address = extract_from_html(html_content, pattern, 1)
         if address:
             cleaned = clean_html_text(address)
-            # Validate it looks like an address (has some numbers and letters)
-            if cleaned and len(cleaned) > 10 and re.search(r'\d', cleaned):
-                return cleaned
+            if cleaned and len(cleaned) > 8 and re.search(r"\d", cleaned):
+                from .validation import is_valid_address
+                if is_valid_address(cleaned):
+                    return cleaned
+
+    return None
+
+
+def get_email(html_content):
+    """Extract business email when listed on Google Maps."""
+    patterns = [
+        r'href="mailto:([^"?]+)"',
+        r'aria-label="Email:\s*([^"]+)"',
+        r'data-item-id="email[^"]*"[^>]*aria-label="([^"]+)"',
+        r'aria-label="[^"]*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})[^"]*"',
+    ]
+
+    for pattern in patterns:
+        raw = extract_from_html(html_content, pattern, 1)
+        if not raw:
+            continue
+        email = clean_html_text(raw)
+        if email and re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", email):
+            return email.lower()
+
+    return None
+
+
+def get_phone_number(html_content):
+    """Extract Saudi phone number; ignore US/foreign numbers."""
+    from .validation import is_us_or_foreign_phone, normalize_saudi_phone
+
+    candidates: list[str] = []
+
+    for pattern in (
+        r'aria-label="Phone:\s*([^"]+)"',
+        r'href="tel:([^"]+)"',
+        r'data-item-id="phone[^"]*"[^>]*aria-label="([^"]+)"',
+        r'data-tooltip="Call"[^>]*href="tel:([^"]+)"',
+    ):
+        for match in re.findall(pattern, html_content, re.IGNORECASE):
+            phone = clean_html_text(match)
+            if phone:
+                candidates.append(phone)
+
+    # Prefer valid Saudi numbers
+    for phone in candidates:
+        saudi = normalize_saudi_phone(phone)
+        if saudi:
+            return saudi
+
+    # Do not return US/foreign numbers for KSA scraping
+    for phone in candidates:
+        if not is_us_or_foreign_phone(phone):
+            digits = re.sub(r"\D", "", phone)
+            if len(digits) >= 9:
+                return digits
 
     return None
 
@@ -294,28 +346,6 @@ def get_website(html_content):
                 if not website.startswith('http'):
                     website = 'https://' + website
                 return website
-
-    return None
-
-def get_phone_number(html_content):
-    """Extracts and standardizes the primary phone number from HTML."""
-    # STABLE: Try semantic selectors first
-    patterns = [
-        r'aria-label="Phone:\s*([^"]+)"',  # HIGHLY STABLE - accessibility attribute
-        r'href="tel:([^"]+)"',  # HIGHLY STABLE - standard tel: protocol
-        r'data-item-id="phone[^"]*"[^>]*aria-label="[^"]*([^"]+)"',  # STABLE - semantic + aria
-        r'data-tooltip="Call"[^>]*href="tel:([^"]+)"',  # MODERATE - data attribute
-        r'button[^>]*aria-label="[^"]*(\+?1?\s*\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})[^"]*"',  # MODERATE - pattern in aria-label
-    ]
-
-    for pattern in patterns:
-        phone = extract_from_html(html_content, pattern, 1)
-        if phone:
-            # Standardize phone number - remove all non-digits except leading +
-            phone = clean_html_text(phone)
-            standardized = re.sub(r'\D', '', phone)
-            if len(standardized) >= 10:  # Valid phone should have at least 10 digits
-                return standardized
 
     return None
 
@@ -445,6 +475,7 @@ def extract_place_data(html_content):
         "categories": get_categories(html_content),
         "website": get_website(html_content),
         "phone": get_phone_number(html_content),
+        "email": get_email(html_content),
         "thumbnail": get_thumbnail(html_content),
         "hours": get_hours(html_content),
         # Add other fields as needed

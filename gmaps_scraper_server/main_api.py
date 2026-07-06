@@ -21,6 +21,7 @@ try:
         get_place,
         update_place,
         delete_place,
+        cleanup_invalid_places,
         mark_whatsapp_shared,
         unmark_whatsapp_shared,
         get_stats,
@@ -82,6 +83,7 @@ class SavePlacesRequest(BaseModel):
 class UpdatePlaceRequest(BaseModel):
     name: Optional[str] = Field(None, min_length=1)
     phone: Optional[str] = None
+    email: Optional[str] = None
     address: Optional[str] = None
     city: Optional[str] = None
     whatsapp_shared: Optional[bool] = None
@@ -108,6 +110,9 @@ async def _run_scrape(
     stats = {"raw_count": len(results), "unique_count": len(results), "duplicates_removed": 0}
     if dedupe and results:
         results, stats = deduplicate_places(results)
+    from gmaps_scraper_server.validation import filter_places_for_saudi
+    results, filter_stats = filter_places_for_saudi(results)
+    stats = {**stats, **filter_stats}
     return {"results": results, "stats": stats}
 
 
@@ -204,6 +209,12 @@ async def api_delete_place(place_id: int):
     if not delete_place(place_id):
         raise HTTPException(status_code=404, detail="Place not found")
     return {"ok": True, "stats": get_stats()}
+
+
+@app.post("/api/places/cleanup-invalid")
+async def api_cleanup_invalid_places():
+    result = cleanup_invalid_places()
+    return {"ok": True, **result, "stats": get_stats()}
 
 
 @app.post("/api/places/{place_id}/whatsapp-shared")

@@ -63,6 +63,14 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_places_name ON places(name);
             """
         )
+        _migrate_schema(conn)
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(places)").fetchall()}
+    if "email" not in cols:
+        conn.execute("ALTER TABLE places ADD COLUMN email TEXT")
+        conn.commit()
 
 
 def _place_to_row(place: Dict[str, Any], source_label: str = "", city: str = "") -> Dict[str, Any]:
@@ -73,6 +81,7 @@ def _place_to_row(place: Dict[str, Any], source_label: str = "", city: str = "")
         "place_id": place.get("place_id") or None,
         "name": place.get("name") or "Unknown",
         "phone": place.get("phone") or None,
+        "email": place.get("email") or None,
         "address": place.get("address") or None,
         "rating": place.get("rating"),
         "reviews_count": place.get("reviews_count"),
@@ -106,14 +115,23 @@ def upsert_places(
     source_label: str = "",
     city: str = "",
 ) -> Dict[str, int]:
-    """Insert or update places. Returns save stats."""
+    """Insert or update places. Skips entries without a valid Saudi phone."""
+    from .validation import normalize_saudi_phone
+
     unique, _ = deduplicate_places(places)
     now = _now_iso()
     inserted = 0
     updated = 0
+    skipped_no_phone = 0
 
     with get_connection() as conn:
         for place in unique:
+            phone = normalize_saudi_phone(place.get("phone"))
+            if not phone:
+                skipped_no_phone += 1
+                continue
+            place = {**place, "phone": phone}
+
             row = _place_to_row(place, source_label, city)
             existing_id = _find_existing_id(conn, row["place_id"], row["phone"])
 
@@ -123,6 +141,7 @@ def upsert_places(
                     UPDATE places SET
                         place_id = COALESCE(?, place_id),
                         name = ?, phone = COALESCE(?, phone),
+                        email = COALESCE(?, email),
                         address = COALESCE(?, address),
                         rating = COALESCE(?, rating),
                         reviews_count = COALESCE(?, reviews_count),
@@ -138,7 +157,7 @@ def upsert_places(
                     WHERE id = ?
                     """,
                     (
-                        row["place_id"], row["name"], row["phone"],
+                        row["place_id"], row["name"], row["phone"], row["email"],
                         row["address"], row["rating"], row["reviews_count"],
                         row["website"], row["link"], row["latitude"], row["longitude"],
                         row["categories"], row["hours"], row["source_label"], row["city"],
@@ -150,13 +169,13 @@ def upsert_places(
                 conn.execute(
                     """
                     INSERT INTO places (
-                        place_id, name, phone, address, rating, reviews_count,
+                        place_id, name, phone, email, address, rating, reviews_count,
                         website, link, latitude, longitude, categories, hours,
                         source_label, city, whatsapp_shared, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
                     """,
                     (
-                        row["place_id"], row["name"], row["phone"], row["address"],
+                        row["place_id"], row["name"], row["phone"], row["email"], row["address"],
                         row["rating"], row["reviews_count"], row["website"], row["link"],
                         row["latitude"], row["longitude"], row["categories"], row["hours"],
                         row["source_label"], row["city"], now, now,
@@ -165,7 +184,12 @@ def upsert_places(
                 inserted += 1
         conn.commit()
 
-    return {"inserted": inserted, "updated": updated, "total_unique": len(unique)}
+    return {
+        "inserted": inserted,
+        "updated": updated,
+        "total_unique": len(unique),
+        "skipped_no_phone": skipped_no_phone,
+    }
 
 
 def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
@@ -268,7 +292,7 @@ def get_place(place_id: int) -> Optional[Dict[str, Any]]:
 
 
 def update_place(place_id: int, fields: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    allowed = {"name", "phone", "address", "city", "whatsapp_shared"}
+    allowed = {"name", "phone", "email", "address", "city", "whatsapp_shared"}
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return get_place(place_id)
@@ -300,6 +324,64 @@ def delete_place(place_id: int) -> bool:
         cur = conn.execute("DELETE FROM places WHERE id = ?", (place_id,))
         conn.commit()
         return cur.rowcount > 0
+
+
+def cleanup_invalid_places() -> Dict[str, int]:
+    """Remove foreign/invalid listings and any row without a valid Saudi phone."""
+    from .validation import clean_address, is_us_or_foreign_phone, normalize_saudi_phone, should_reject_place
+
+    deleted = 0
+    deleted_no_phone = 0
+    phone_fixed = 0
+
+    with get_connection() as conn:
+        rows = conn.execute("SELECT * FROM places").fetchall()
+        for row in rows:
+            p = _row_to_dict(row)
+            p["coordinates"] = {"latitude": p.get("latitude"), "longitude": p.get("longitude")}
+
+            if should_reject_place(p, city=p.get("city")):
+                conn.execute("DELETE FROM places WHERE id = ?", (p["id"],))
+                deleted += 1
+                continue
+
+            phone = p.get("phone")
+            saudi = normalize_saudi_phone(phone) if phone else None
+
+            if not saudi:
+                conn.execute("DELETE FROM places WHERE id = ?", (p["id"],))
+                deleted_no_phone += 1
+                continue
+
+            if phone and is_us_or_foreign_phone(phone):
+                conn.execute("DELETE FROM places WHERE id = ?", (p["id"],))
+                deleted_no_phone += 1
+                continue
+
+            addr = clean_address(p.get("address"))
+            updates = {}
+            if saudi != phone:
+                updates["phone"] = saudi
+            if addr != p.get("address"):
+                updates["address"] = addr
+            if updates:
+                updates["updated_at"] = _now_iso()
+                set_clause = ", ".join(f"{k} = ?" for k in updates)
+                conn.execute(
+                    f"UPDATE places SET {set_clause} WHERE id = ?",
+                    list(updates.values()) + [p["id"]],
+                )
+                phone_fixed += 1
+
+        cur = conn.execute("DELETE FROM places WHERE phone IS NULL OR phone = ''")
+        deleted_no_phone += cur.rowcount
+        conn.commit()
+
+    return {
+        "deleted": deleted,
+        "deleted_no_phone": deleted_no_phone,
+        "fixed": phone_fixed,
+    }
 
 
 def _period_starts_utc() -> Dict[str, Optional[str]]:
