@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>وليف — جمع بيانات الخرائط</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css?v=5" />
+</head>
+<body>
+  <div class="page">
+    <header class="hero glass">
+      <div class="icon-wrap lg" data-icon="sparkle"></div>
+      <div class="hero-text">
+        <h1>وليف — جمع بيانات الخرائط</h1>
+        <p class="subtitle">جمع المتاجر والعيادات · حفظ · مشاركة عبر واتساب</p>
+      </div>
+    </header>
+
+    <nav class="main-tabs glass">
+      <button type="button" class="main-tab active" data-panel="scrape-panel">
+        <span data-icon="rocket"></span> جمع البيانات
+      </button>
+      <button type="button" class="main-tab" data-panel="results-panel">
+        <span data-icon="clipboard-check"></span> النتائج
+        <span id="db-count-badge" class="badge">0</span>
+      </button>
+    </nav>
+
+    <div id="scrape-panel" class="panel">
+      <main class="card glass">
+        <div class="mode-tabs">
+          <button type="button" class="mode-tab active" data-mode="single">
+            <span data-icon="magnifier"></span> بحث واحد
+          </button>
+          <button type="button" class="mode-tab" data-mode="city">
+            <span data-icon="grid"></span> مسح مدينة كاملة
+          </button>
+        </div>
+
+        <form id="scrape-form">
+          <div id="single-panel">
+            <label for="query"><span data-icon="magnifier"></span> كلمة البحث</label>
+            <input id="query" type="text" placeholder="مثال: متجر حيوانات الدمام" autocomplete="off" />
+
+            <div class="presets">
+              <span class="presets-label">اختصارات سريعة</span>
+              <button type="button" class="preset" data-query="pet store Riyadh"><span data-icon="shopping"></span> الرياض</button>
+              <button type="button" class="preset" data-query="veterinary clinic Jeddah"><span data-icon="pin"></span> جدة</button>
+              <button type="button" class="preset" data-query="pet store Dammam"><span data-icon="location"></span> الدمام</button>
+              <button type="button" class="preset" data-query="عيادة بيطرية الرياض">عيادة · الرياض</button>
+            </div>
+
+            <div class="row">
+              <div class="field">
+                <label for="max-places">الحد الأقصى للنتائج</label>
+                <input id="max-places" type="number" min="1" max="120" value="120" />
+              </div>
+              <div class="field">
+                <label for="lang">اللغة</label>
+                <select id="lang">
+                  <option value="en">الإنجليزية</option>
+                  <option value="ar" selected>العربية</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div id="city-panel" class="hidden">
+            <label for="city"><span data-icon="location"></span> المدينة</label>
+            <select id="city">
+              <option value="Dammam">الدمام</option>
+              <option value="Riyadh">الرياض</option>
+              <option value="Jeddah">جدة</option>
+              <option value="Khobar">الخبر</option>
+              <option value="Mecca">مكة</option>
+              <option value="Medina">المدينة المنورة</option>
+              <option value="Abha">أبها</option>
+              <option value="Tabuk">تبوك</option>
+            </select>
+            <small id="city-zones-hint">مسح شبكي بتقريب تلقائي</small>
+
+            <div class="row">
+              <div class="field">
+                <label for="city-keyword">كلمة مفتاحية (اختياري)</label>
+                <input id="city-keyword" type="text" placeholder="متجر حيوانات" />
+              </div>
+              <div class="field">
+                <label for="city-lang">اللغة</label>
+                <select id="city-lang">
+                  <option value="en">الإنجليزية</option>
+                  <option value="ar" selected>العربية</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="row">
+              <div class="field">
+                <label for="zoom">مستوى التقريب</label>
+                <input id="zoom" type="number" min="12" max="17" value="15" />
+              </div>
+              <div class="field">
+                <label for="cell-size">حجم المنطقة (كم)</label>
+                <input id="cell-size" type="number" min="1.5" max="8" step="0.5" value="4" />
+              </div>
+            </div>
+
+            <label class="checkbox-label">
+              <input id="include-vet" type="checkbox" checked />
+              تضمين العيادات البيطرية
+            </label>
+          </div>
+
+          <button type="submit" id="submit-btn" class="primary">
+            <span data-icon="bolt"></span>
+            <span id="submit-label">بدء الجمع</span>
+          </button>
+        </form>
+
+        <div id="progress-wrap" class="progress-wrap hidden">
+          <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
+          <p id="progress-text" class="progress-text"></p>
+        </div>
+
+        <div id="status" class="status hidden" aria-live="polite"></div>
+      </main>
+    </div>
+
+    <div id="results-panel" class="panel hidden">
+      <section class="card glass">
+        <div class="results-header">
+          <div>
+            <h2><span data-icon="clipboard"></span> النتائج المحفوظة</h2>
+            <p id="results-stats-line" class="stats-line">جاري التحميل…</p>
+          </div>
+          <div class="actions">
+            <button type="button" id="refresh-results" class="secondary"><span data-icon="gauge"></span> تحديث</button>
+            <button type="button" id="download-csv" class="secondary"><span data-icon="cloud-download"></span> CSV</button>
+            <button type="button" id="download-json" class="secondary"><span data-icon="cloud-download"></span> JSON</button>
+          </div>
+        </div>
+
+        <div class="stat-cards" id="stat-cards">
+          <div class="stat-card glass"><span>الإجمالي</span><strong id="stat-total">0</strong></div>
+          <div class="stat-card glass"><span>تم المشاركة</span><strong id="stat-shared">0</strong></div>
+          <div class="stat-card glass"><span>في الانتظار</span><strong id="stat-pending">0</strong></div>
+          <div class="stat-card glass"><span>بها هاتف</span><strong id="stat-phone">0</strong></div>
+        </div>
+
+        <div class="analytics-section glass">
+          <h3 class="analytics-title"><span data-icon="gauge"></span> التحليلات</h3>
+          <p class="analytics-note">التوقيت: Asia/Riyadh · الأسبوع يبدأ الأحد</p>
+          <div class="analytics-grid" role="table" aria-label="تحليلات الجمع والمشاركة">
+            <div class="analytics-cell analytics-head"></div>
+            <div class="analytics-cell analytics-head">اليوم</div>
+            <div class="analytics-cell analytics-head">هذا الأسبوع</div>
+            <div class="analytics-cell analytics-head">هذا الشهر</div>
+            <div class="analytics-cell analytics-head">هذه السنة</div>
+            <div class="analytics-cell analytics-head">الكل</div>
+
+            <div class="analytics-cell analytics-label">أماكن مُجمَّعة</div>
+            <div class="analytics-cell"><strong id="col-today">0</strong></div>
+            <div class="analytics-cell"><strong id="col-week">0</strong></div>
+            <div class="analytics-cell"><strong id="col-month">0</strong></div>
+            <div class="analytics-cell"><strong id="col-year">0</strong></div>
+            <div class="analytics-cell"><strong id="col-all">0</strong></div>
+
+            <div class="analytics-cell analytics-label analytics-label-shared">مشاركات واتساب</div>
+            <div class="analytics-cell analytics-shared"><strong id="shr-today">0</strong></div>
+            <div class="analytics-cell analytics-shared"><strong id="shr-week">0</strong></div>
+            <div class="analytics-cell analytics-shared"><strong id="shr-month">0</strong></div>
+            <div class="analytics-cell analytics-shared"><strong id="shr-year">0</strong></div>
+            <div class="analytics-cell analytics-shared"><strong id="shr-all">0</strong></div>
+          </div>
+        </div>
+
+        <div class="filters row">
+          <div class="field">
+            <label for="filter-status">الحالة</label>
+            <select id="filter-status">
+              <option value="all">الكل</option>
+              <option value="pending" selected>لم تُشارَ بعد</option>
+              <option value="shared">مشتركة عبر واتساب</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="filter-city">المدينة</label>
+            <select id="filter-city">
+              <option value="">كل المدن</option>
+              <option value="Dammam">الدمام</option>
+              <option value="Riyadh">الرياض</option>
+              <option value="Jeddah">جدة</option>
+              <option value="Khobar">الخبر</option>
+              <option value="Mecca">مكة</option>
+              <option value="Medina">المدينة المنورة</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="filter-search">بحث</label>
+            <input id="filter-search" type="text" placeholder="الاسم أو الهاتف…" />
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table id="saved-table">
+            <thead>
+              <tr>
+                <th>الحالة</th>
+                <th>الاسم</th>
+                <th>الهاتف</th>
+                <th>العنوان</th>
+                <th>المدينة</th>
+                <th>واتساب</th>
+                <th>إجراءات</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <div class="pagination-bar" id="pagination-bar">
+          <button type="button" id="page-prev" class="secondary page-btn" disabled>→ السابق</button>
+          <span id="page-info" class="page-info">صفحة 1 من 1</span>
+          <button type="button" id="page-next" class="secondary page-btn" disabled>التالي ←</button>
+        </div>
+
+        <p id="live-indicator" class="live-indicator hidden">
+          <span class="live-dot"></span> مباشر — تحديث تلقائي كل 3 ثوانٍ
+        </p>
+        <p id="toast" class="toast hidden" role="status"></p>
+      </section>
+    </div>
+
+    <div id="edit-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="edit-modal-title">
+      <div class="modal-backdrop" data-close-modal></div>
+      <div class="modal-card glass">
+        <div class="modal-header">
+          <h3 id="edit-modal-title"><span data-icon="pen"></span> تعديل المكان</h3>
+          <button type="button" class="icon-btn modal-close" data-close-modal aria-label="إغلاق"><span data-icon="tab-close"></span></button>
+        </div>
+        <form id="edit-form">
+          <input type="hidden" id="edit-id" />
+          <label for="edit-name">الاسم</label>
+          <input id="edit-name" type="text" required />
+
+          <label for="edit-phone">الهاتف</label>
+          <input id="edit-phone" type="text" dir="ltr" placeholder="9665xxxxxxxx" />
+
+          <label for="edit-address">العنوان</label>
+          <textarea id="edit-address" rows="2"></textarea>
+
+          <label for="edit-city">المدينة</label>
+          <select id="edit-city">
+            <option value="">—</option>
+            <option value="Dammam">الدمام</option>
+            <option value="Riyadh">الرياض</option>
+            <option value="Jeddah">جدة</option>
+            <option value="Khobar">الخبر</option>
+            <option value="Mecca">مكة</option>
+            <option value="Medina">المدينة المنورة</option>
+            <option value="Abha">أبها</option>
+            <option value="Tabuk">تبوك</option>
+          </select>
+
+          <label class="checkbox-label">
+            <input id="edit-shared" type="checkbox" />
+            تم المشاركة عبر واتساب
+          </label>
+
+          <div class="modal-actions">
+            <button type="button" class="secondary" data-close-modal>إلغاء</button>
+            <button type="submit" class="primary"><span data-icon="clipboard-check"></span> حفظ</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <footer class="glass">
+      أيقونات من <a href="https://nucleoapp.com/svg-glass-icons" target="_blank" rel="noopener">Nucleo Glass Icons</a>
+      · تخزين SQLite · تواصل واتساب لوليف
+    </footer>
+  </div>
+  <script type="module" src="/static/app.js?v=5"></script>
+</body>
+</html>

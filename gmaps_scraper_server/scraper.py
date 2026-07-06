@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 # --- Constants ---
 BASE_URL = "https://www.google.com/maps/search/"
 DEFAULT_TIMEOUT = 30000  # 30 seconds for navigation and selectors
-SCROLL_PAUSE_TIME = 1.5  # Pause between scrolls
-MAX_SCROLL_ATTEMPTS_WITHOUT_NEW_LINKS = 5 # Stop scrolling if no new links found after this many scrolls
+SCROLL_PAUSE_TIME = 2.0  # Pause between scrolls
+MAX_SCROLL_ATTEMPTS_WITHOUT_NEW_LINKS = 12  # Stop scrolling if no new links found after this many scrolls
 
 # User agent rotation for anti-detection
 USER_AGENTS = [
@@ -31,11 +31,14 @@ def random_delay(min_sec=1.0, max_sec=2.0):
     return random.uniform(min_sec, max_sec)
 
 # --- Helper Functions ---
-def create_search_url(query, lang="en", geo_coordinates=None, zoom=None):
-    """Creates a Google Maps search URL."""
+def create_search_url(query, lang="en", lat=None, lng=None, zoom=None):
+    """Creates a Google Maps search URL, optionally centered on lat/lng with zoom."""
+    from urllib.parse import quote
+    encoded_query = quote(query)
+    if lat is not None and lng is not None:
+        z = zoom if zoom is not None else 15
+        return f"https://www.google.com/maps/search/{encoded_query}/@{lat},{lng},{z}z?hl={lang}"
     params = {'q': query, 'hl': lang}
-    # Note: geo_coordinates and zoom might require different URL structure (/maps/@lat,lng,zoom)
-    # For simplicity, starting with basic query search
     return BASE_URL + "?" + urlencode(params)
 
 async def scrape_place_details(context, link, semaphore):
@@ -83,7 +86,16 @@ async def scrape_place_details(context, link, semaphore):
             await page.close()
 
 # --- Main Scraping Logic ---
-async def scrape_google_maps(query, max_places=None, lang="en", headless=True, concurrency=5):
+async def scrape_google_maps(
+    query,
+    max_places=None,
+    lang="en",
+    headless=True,
+    concurrency=5,
+    lat=None,
+    lng=None,
+    zoom=15,
+):
     """
     Scrapes Google Maps for places based on a query.
 
@@ -93,6 +105,9 @@ async def scrape_google_maps(query, max_places=None, lang="en", headless=True, c
         lang (str, optional): Language code for Google Maps (e.g., 'en', 'es'). Defaults to "en".
         headless (bool, optional): Whether to run the browser in headless mode. Defaults to True.
         concurrency (int, optional): Number of concurrent tabs for scraping details. Defaults to 5.
+        lat (float, optional): Center latitude for geo-targeted search.
+        lng (float, optional): Center longitude for geo-targeted search.
+        zoom (int, optional): Map zoom level (14-17 recommended for grid cells). Defaults to 15.
 
     Returns:
         list: A list of dictionaries, each containing details for a scraped place.
@@ -126,33 +141,23 @@ async def scrape_google_maps(query, max_places=None, lang="en", headless=True, c
                 await browser.close()
                 raise Exception("Failed to create a new browser page (context.new_page() returned None).")
 
-            # Navigate to Google Maps homepage first (more natural, avoids sidebar issues)
-            logger.info("Navigating to Google Maps homepage...")
-            await page.goto('https://www.google.com/maps', wait_until='domcontentloaded')
-            await asyncio.sleep(random_delay(2.0, 3.0))  # Give page time to fully load
+            # Navigate to search — direct geo URL or homepage + search box
+            if lat is not None and lng is not None:
+                search_url = create_search_url(query, lang=lang, lat=lat, lng=lng, zoom=zoom)
+                logger.info("Navigating to geo search: %s", search_url)
+                await page.goto(search_url, wait_until='domcontentloaded')
+                await asyncio.sleep(random_delay(3.0, 4.0))
+            else:
+                # Navigate to Google Maps homepage first (more natural, avoids sidebar issues)
+                logger.info("Navigating to Google Maps homepage...")
+                await page.goto('https://www.google.com/maps', wait_until='domcontentloaded')
+                await asyncio.sleep(random_delay(2.0, 3.0))  # Give page time to fully load
 
-            # --- Handle Terms of Service / Consent pages BEFORE search ---
-            # Google Maps may show a consent page before showing the actual map
+            # --- Handle Terms of Service / Consent pages ---
             logger.info("Checking for consent/terms page...")
             consent_handled = False
-            
+
             try:
-                # Check if we're on a consent page by looking for consent-related elements
-                # German: "Alle akzeptieren", "Alle ablehnen"
-                # English: "Accept all", "Reject all", "I agree", "I reject"
-                # Spanish: "Aceptar todo", "Rechazar todo"
-                # French: "Tout accepter", "Tout refuser"
-                # Italian: "Accetta tutto", "Rifiuta tutto"
-                # Dutch: "Alles accepteren", "Alles afwijzen"
-                # Portuguese: "Aceitar tudo", "Recusar tudo"
-                # Polish: "Zaakceptuj wszystko", "Odrzuć wszystko"
-                # Swedish: "Godkänn alla", "Avvisa alla"
-                # Danish: "Acceptér alle", "Afvis alle"
-                # Norwegian: "Godta alle", "Avvis alle"
-                # Greek: "Αποδοχή όλων", "Απόρριψη όλων"
-                # Turkish: "Tümünü kabul et", "Tümünü reddet"
-                
-                # Use aria-label selectors instead of XPath (XPath text() matching is unreliable)
                 consent_selectors = [
                     # German
                     'button[aria-label="Alle akzeptieren"]',  # German accept
@@ -220,66 +225,56 @@ async def scrape_google_maps(query, max_places=None, lang="en", headless=True, c
             if consent_handled:
                 await asyncio.sleep(random_delay(2.0, 3.0))
 
-            # --- Find and use the search box AFTER consent handling ---
-            logger.info(f"Typing search query: {query}")
-            try:
-                # Updated search box selectors for new Google Maps DOM structure
-                # The input element uses role="combobox" and name="q"
-                search_box_selectors = [
-                    'input[name="q"]',  # PRIMARY: Most reliable selector
-                    'input[role="combobox"]',  # SECONDARY: Combobox role
-                    'input[aria-controls="ucc-0"]',  # TERTIARY: Control attribute
-                    'input[id="searchboxinput"]',  # FALLBACK: Older selector
-                    'input[aria-label*="Search"]',  # FALLBACK: English
-                    'input[aria-label*="suchen"]',  # FALLBACK: German
-                    'input[placeholder*="Search"]',  # FALLBACK
-                    'input[placeholder*="Suchen"]',  # FALLBACK: German
-                ]
+            # --- Search box (skip when using geo URL — query is already in URL) ---
+            if lat is None or lng is None:
+                logger.info(f"Typing search query: {query}")
+                try:
+                    search_box_selectors = [
+                        'input[name="q"]',
+                        'input[role="combobox"]',
+                        'input[aria-controls="ucc-0"]',
+                        'input[id="searchboxinput"]',
+                        'input[aria-label*="Search"]',
+                        'input[aria-label*="suchen"]',
+                        'input[placeholder*="Search"]',
+                        'input[placeholder*="Suchen"]',
+                    ]
 
-                search_box = None
-                for selector in search_box_selectors:
-                    try:
-                        search_box_element = await page.wait_for_selector(selector, state='visible', timeout=3000)
-                        if search_box_element:
-                            search_box = selector
-                            logger.debug(f"Found search box with selector: {selector}")
-                            break
-                    except Exception as e:
-                        logger.debug(f"Selector '{selector}' not found: {e}")
-                        continue
+                    search_box = None
+                    for selector in search_box_selectors:
+                        try:
+                            search_box_element = await page.wait_for_selector(selector, state='visible', timeout=3000)
+                            if search_box_element:
+                                search_box = selector
+                                logger.debug(f"Found search box with selector: {selector}")
+                                break
+                        except Exception as e:
+                            logger.debug(f"Selector '{selector}' not found: {e}")
+                            continue
 
-                if not search_box:
-                    # Additional diagnostic: log what elements exist on the page
-                    logger.error("Could not find search box on Google Maps")
-                    logger.error("Page title: %s", await page.title())
-                    logger.error("Page URL: %s", page.url)
-                    
-                    # Try to debug: find all input elements on the page
-                    try:
-                        all_inputs = await page.query_selector_all('input')
-                        logger.error(f"Found {len(all_inputs)} input elements on the page")
-                        for i, inp in enumerate(all_inputs[:5]):
-                            attrs = await inp.get_attribute('name'), await inp.get_attribute('aria-label'), await inp.get_attribute('placeholder')
-                            logger.error(f"Input {i}: name={attrs[0]}, aria-label={attrs[1]}, placeholder={attrs[2]}")
-                    except Exception as debug_error:
-                        logger.error(f"Could not debug input elements: {debug_error}")
-                    
+                    if not search_box:
+                        logger.error("Could not find search box on Google Maps")
+                        logger.error("Page title: %s", await page.title())
+                        logger.error("Page URL: %s", page.url)
+                        await browser.close()
+                        return []
+
+                    await page.fill(search_box, query)
+                    await asyncio.sleep(random_delay(0.5, 1.0))
+                    await page.keyboard.press('Enter')
+                    logger.info("Search submitted, waiting for results...")
+                    await asyncio.sleep(random_delay(3.0, 4.0))
+
+                except Exception as e:
+                    logger.error(f"Error performing search: {e}")
                     await browser.close()
                     return []
-
-                # Type the query into the search box
-                await page.fill(search_box, query)
-                await asyncio.sleep(random_delay(0.5, 1.0))
-
-                # Press Enter to submit search
-                await page.keyboard.press('Enter')
-                logger.info("Search submitted, waiting for results...")
-                await asyncio.sleep(random_delay(3.0, 4.0))
-
-            except Exception as e:
-                logger.error(f"Error performing search: {e}")
-                await browser.close()
-                return []
+            else:
+                # Re-load geo URL after consent if needed
+                if consent_handled:
+                    search_url = create_search_url(query, lang=lang, lat=lat, lng=lng, zoom=zoom)
+                    await page.goto(search_url, wait_until='domcontentloaded')
+                    await asyncio.sleep(random_delay(2.0, 3.0))
 
 
             # --- Scrolling and Link Extraction ---
@@ -314,11 +309,13 @@ async def scrape_google_maps(query, max_places=None, lang="en", headless=True, c
             if found_feed and await page.locator(feed_selector).count() > 0:
                 last_height = await page.evaluate(f'document.querySelector(\'{feed_selector}\').scrollHeight')
                 while True:
-                    # Scroll down
-                    await page.evaluate(f'document.querySelector(\'{feed_selector}\').scrollTop = document.querySelector(\'{feed_selector}\').scrollHeight')
-                    await asyncio.sleep(random_delay(1.0, 2.0))  # Random delay for anti-detection
+                    # Incremental scroll (more reliable than jumping to bottom)
+                    await page.evaluate(f'''() => {{
+                        const feed = document.querySelector('{feed_selector}');
+                        if (feed) feed.scrollTop += Math.max(feed.clientHeight * 0.85, 400);
+                    }}''')
+                    await asyncio.sleep(random_delay(1.5, 2.5))
 
-                    # Extract links after scroll
                     current_links_list = await page.locator(f'{feed_selector} a[href*="/maps/place/"]').evaluate_all('elements => elements.map(a => a.href)')
                     current_links = set(current_links_list)
                     new_links_found = len(current_links - place_links) > 0
@@ -327,31 +324,30 @@ async def scrape_google_maps(query, max_places=None, lang="en", headless=True, c
 
                     if max_places is not None and len(place_links) >= max_places:
                         logger.info(f"Reached max_places limit ({max_places}).")
-                        place_links = set(list(place_links)[:max_places]) # Trim excess links
+                        place_links = set(list(place_links)[:max_places])
                         break
 
-                    # Check if scroll height has changed
                     new_height = await page.evaluate(f'document.querySelector(\'{feed_selector}\').scrollHeight')
                     if new_height == last_height:
-                        # Check for the "end of results" marker
-                        # Check for end marker in multiple languages (PR #7)
-                        end_marker_xpath = "//span[contains(text(), \"You've reached the end of the list.\") or contains(text(), \"Has llegado al final de la lista\")]"
+                        end_marker_xpath = (
+                            "//span[contains(text(), \"You've reached the end of the list.\") "
+                            "or contains(text(), \"Has llegado al final de la lista\") "
+                            "or contains(text(), \"لقد وصلت إلى نهاية القائمة\")]"
+                        )
                         if await page.locator(end_marker_xpath).count() > 0:
                             logger.info("Reached the end of the results list.")
                             break
+                        if not new_links_found:
+                            scroll_attempts_no_new += 1
+                            logger.debug(f"Scroll height unchanged and no new links. Attempt {scroll_attempts_no_new}/{MAX_SCROLL_ATTEMPTS_WITHOUT_NEW_LINKS}")
+                            if scroll_attempts_no_new >= MAX_SCROLL_ATTEMPTS_WITHOUT_NEW_LINKS:
+                                logger.info("Stopping scroll due to lack of new links.")
+                                break
                         else:
-                            # If height didn't change but end marker isn't there, maybe loading issue?
-                            if not new_links_found:
-                                scroll_attempts_no_new += 1
-                                logger.debug(f"Scroll height unchanged and no new links. Attempt {scroll_attempts_no_new}/{MAX_SCROLL_ATTEMPTS_WITHOUT_NEW_LINKS}")
-                                if scroll_attempts_no_new >= MAX_SCROLL_ATTEMPTS_WITHOUT_NEW_LINKS:
-                                    logger.info("Stopping scroll due to lack of new links.")
-                                    break
-                            else:
-                                scroll_attempts_no_new = 0 # Reset if new links were found this cycle
+                            scroll_attempts_no_new = 0
                     else:
                         last_height = new_height
-                        scroll_attempts_no_new = 0 # Reset if scroll height changed
+                        scroll_attempts_no_new = 0
 
             # Close the search page as we have the links now
             await page.close()
@@ -372,9 +368,11 @@ async def scrape_google_maps(query, max_places=None, lang="en", headless=True, c
             await browser.close()
 
         except PlaywrightTimeoutError:
-            logger.error(f"Timeout error during scraping process.")
+            logger.error("Timeout error during scraping process.")
+            raise
         except Exception as e:
             logger.error(f"An error occurred during scraping: {e}", exc_info=True)
+            raise
         finally:
             # Ensure browser is closed if an error occurred mid-process
             if browser and browser.is_connected():
