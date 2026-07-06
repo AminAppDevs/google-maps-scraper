@@ -82,6 +82,7 @@ caprover deploy -t deploy.tar.gz -a waleef-gmaps
 |---------|--------|
 | **Container HTTP Port** | `80` |
 | **Environment** | `GMAPS_DATA_DIR=/captain/data` (default in Dockerfile) |
+| **GMAPS_SKIP_SEED** | `1` on production servers that already have data — blocks auto-seed on start and manual seed API (unless `force=true`) |
 | **SEED_ADMIN_KEY** | Any secret string (e.g. `waleef-seed-2026`) — for importing DB without SSH |
 | **Instance count** | `1` (scraping is heavy; avoid multiple instances on one DB) |
 | **RAM** | **2 GB minimum** (Playwright + Chromium) |
@@ -90,7 +91,45 @@ Optional health check path: `/health`
 
 ---
 
-## 5. Load your 359 stores (no SSH)
+## Safe redeploy (keep server DB, ship code only)
+
+Use this when the server already has places + WhatsApp share status and you only want UI/code updates.
+
+1. **CapRover → App Configs → Persistent Directories** — must include `/captain/data`
+2. **Environment variables:**
+   - `GMAPS_DATA_DIR=/captain/data`
+   - `GMAPS_SKIP_SEED=1` ← prevents any seed copy on restart
+3. **Do NOT** run `./scripts/copy-db-to-seed.sh` before deploy
+4. Push code and rebuild:
+
+```bash
+git push origin main
+# CapRover → Force rebuild
+```
+
+Or from repo root:
+
+```bash
+chmod +x scripts/deploy-safe.sh
+./scripts/deploy-safe.sh
+```
+
+**What stays safe on redeploy**
+
+| Item | Included in deploy? | Overwrites server DB? |
+|------|---------------------|------------------------|
+| `data/places.db` (local) | ❌ gitignored + .dockerignore | ❌ Never |
+| `seed/places.db` (in image) | ✅ baked in image | ❌ Only if server DB is **empty** and `GMAPS_SKIP_SEED` is not set |
+| `/captain/data/places.db` | ❌ persistent volume | ✅ **Kept** across redeploys |
+
+**Never run** unless you intend to wipe server data:
+
+```bash
+curl -X POST ".../api/admin/seed-database?key=...&force=true"
+docker cp ./seed/places.db <CONTAINER>:/captain/data/places.db
+```
+
+---
 
 ### A — Automatic (recommended)
 

@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/style.css?v=6" />
+  <link rel="stylesheet" href="/static/style.css?v=7" />
 </head>
 <body>
   <div class="page">
@@ -154,26 +154,36 @@
           <h3 class="analytics-title"><span data-icon="gauge"></span> التحليلات</h3>
           <p class="analytics-note">التوقيت: Asia/Riyadh · الأسبوع يبدأ الأحد</p>
           <div class="analytics-grid" role="table" aria-label="تحليلات الجمع والمشاركة">
-            <div class="analytics-cell analytics-head"></div>
-            <div class="analytics-cell analytics-head">اليوم</div>
-            <div class="analytics-cell analytics-head">هذا الأسبوع</div>
-            <div class="analytics-cell analytics-head">هذا الشهر</div>
-            <div class="analytics-cell analytics-head">هذه السنة</div>
-            <div class="analytics-cell analytics-head">الكل</div>
+            <div class="analytics-row analytics-header" role="row">
+              <div class="analytics-cell analytics-head" role="columnheader"></div>
+              <div class="analytics-cell analytics-head" role="columnheader">اليوم</div>
+              <div class="analytics-cell analytics-head" role="columnheader">هذا الأسبوع</div>
+              <div class="analytics-cell analytics-head" role="columnheader">هذا الشهر</div>
+              <div class="analytics-cell analytics-head" role="columnheader">هذه السنة</div>
+              <div class="analytics-cell analytics-head" role="columnheader">الكل</div>
+            </div>
 
-            <div class="analytics-cell analytics-label">أماكن مُجمَّعة</div>
-            <div class="analytics-cell"><strong id="col-today">0</strong></div>
-            <div class="analytics-cell"><strong id="col-week">0</strong></div>
-            <div class="analytics-cell"><strong id="col-month">0</strong></div>
-            <div class="analytics-cell"><strong id="col-year">0</strong></div>
-            <div class="analytics-cell"><strong id="col-all">0</strong></div>
+            <div class="analytics-row" role="row">
+              <div class="analytics-cell analytics-label" role="rowheader">أماكن مُجمَّعة</div>
+              <div class="analytics-periods">
+                <div class="analytics-cell" role="cell"><span class="period-tag">اليوم</span><strong id="col-today">0</strong></div>
+                <div class="analytics-cell" role="cell"><span class="period-tag">هذا الأسبوع</span><strong id="col-week">0</strong></div>
+                <div class="analytics-cell" role="cell"><span class="period-tag">هذا الشهر</span><strong id="col-month">0</strong></div>
+                <div class="analytics-cell" role="cell"><span class="period-tag">هذه السنة</span><strong id="col-year">0</strong></div>
+                <div class="analytics-cell" role="cell"><span class="period-tag">الكل</span><strong id="col-all">0</strong></div>
+              </div>
+            </div>
 
-            <div class="analytics-cell analytics-label analytics-label-shared">مشاركات واتساب</div>
-            <div class="analytics-cell analytics-shared"><strong id="shr-today">0</strong></div>
-            <div class="analytics-cell analytics-shared"><strong id="shr-week">0</strong></div>
-            <div class="analytics-cell analytics-shared"><strong id="shr-month">0</strong></div>
-            <div class="analytics-cell analytics-shared"><strong id="shr-year">0</strong></div>
-            <div class="analytics-cell analytics-shared"><strong id="shr-all">0</strong></div>
+            <div class="analytics-row analytics-row-shared" role="row">
+              <div class="analytics-cell analytics-label analytics-label-shared" role="rowheader">مشاركات واتساب</div>
+              <div class="analytics-periods">
+                <div class="analytics-cell analytics-shared" role="cell"><span class="period-tag">اليوم</span><strong id="shr-today">0</strong></div>
+                <div class="analytics-cell analytics-shared" role="cell"><span class="period-tag">هذا الأسبوع</span><strong id="shr-week">0</strong></div>
+                <div class="analytics-cell analytics-shared" role="cell"><span class="period-tag">هذا الشهر</span><strong id="shr-month">0</strong></div>
+                <div class="analytics-cell analytics-shared" role="cell"><span class="period-tag">هذه السنة</span><strong id="shr-year">0</strong></div>
+                <div class="analytics-cell analytics-shared" role="cell"><span class="period-tag">الكل</span><strong id="shr-all">0</strong></div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -293,6 +303,6 @@
       · تخزين SQLite · تواصل واتساب لوليف
     </footer>
   </div>
-  <script type="module" src="/static/app.js?v=11"></script>
+  <script type="module" src="/static/app.js?v=12"></script>
 </body>
 </html>

@@ -318,6 +318,16 @@ function buildWhatsAppDesktopUrl(place) {
   return null;
 }
 
+function isMobileDevice() {
+  return /Android|iPhone|iPad|iPod|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
+    || (navigator.maxTouchPoints > 1 && window.innerWidth < 900);
+}
+
+function buildWhatsAppUrl(place) {
+  if (isMobileDevice() && place.whatsapp_url) return place.whatsapp_url;
+  return buildWhatsAppDesktopUrl(place);
+}
+
 function openWhatsAppApp(url) {
   // Must run synchronously from the click handler so macOS opens the WhatsApp app (whatsapp://).
   window.location.assign(url);
@@ -354,7 +364,7 @@ async function refreshStatsOnly() {
 }
 
 async function openWhatsApp(place) {
-  const url = buildWhatsAppDesktopUrl(place);
+  const url = buildWhatsAppUrl(place);
   if (!url) {
     alert("لا يوجد رقم هاتف لهذا المكان.");
     return;
@@ -511,14 +521,14 @@ function renderSavedTable(places, highlightId = null) {
     const checked = selectedIds.has(p.id) ? "checked" : "";
 
     tr.innerHTML = `
-      <td class="col-check"><input type="checkbox" class="row-check" data-id="${p.id}" aria-label="تحديد ${escapeHtml(p.name || "")}" ${checked} /></td>
-      <td>${statusBadge}</td>
-      <td>${escapeHtml(p.name || "—")}</td>
-      <td dir="ltr">${escapeHtml(p.phone || "—")}</td>
-      <td dir="ltr">${escapeHtml(p.email || "—")}</td>
-      <td>${escapeHtml(cityLabel(p.city))}</td>
-      <td>${waCell}</td>
-      <td>
+      <td class="col-check" data-label=""><input type="checkbox" class="row-check" data-id="${p.id}" aria-label="تحديد ${escapeHtml(p.name || "")}" ${checked} /></td>
+      <td class="cell-status" data-label="الحالة">${statusBadge}</td>
+      <td class="cell-name" data-label="الاسم">${escapeHtml(p.name || "—")}</td>
+      <td class="cell-phone cell-truncate" data-label="الهاتف" dir="ltr">${escapeHtml(p.phone || "—")}</td>
+      <td class="cell-email cell-truncate" data-label="البريد" dir="ltr">${escapeHtml(p.email || "—")}</td>
+      <td class="cell-city" data-label="المدينة">${escapeHtml(cityLabel(p.city))}</td>
+      <td class="cell-wa" data-label="واتساب">${waCell}</td>
+      <td class="cell-actions" data-label="إجراءات">
         <div class="row-actions">
           <button type="button" class="icon-btn icon-btn-edit" title="تعديل" aria-label="تعديل">${icon("pen")}</button>
           <button type="button" class="icon-btn icon-btn-delete" title="حذف" aria-label="حذف">${icon("trash")}</button>

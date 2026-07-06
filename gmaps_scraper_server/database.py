@@ -334,6 +334,16 @@ def seed_from_bundle(force: bool = False) -> Dict[str, Any]:
     """Copy bundled seed/places.db into persistent storage."""
     import shutil
 
+    if os.environ.get("GMAPS_SKIP_SEED", "").lower() in ("1", "true", "yes") and not force:
+        count = _place_count()
+        return {
+            "ok": True,
+            "seeded": False,
+            "skipped": True,
+            "count": count,
+            "message": "Auto-seed disabled (GMAPS_SKIP_SEED); use force=true to override",
+        }
+
     if not SEED_PATH.is_file():
         return {
             "ok": False,

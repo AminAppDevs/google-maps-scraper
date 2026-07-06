@@ -8,6 +8,7 @@ chmod 755 "$DATA_DIR" 2>/dev/null || true
 export PORT="${PORT:-80}"
 
 python - <<'PY'
+import os
 import shutil
 import sqlite3
 from pathlib import Path
@@ -30,11 +31,16 @@ def place_count(db_path: Path) -> int:
         conn.close()
 
 count = place_count(DB_PATH)
+skip_seed = os.environ.get("GMAPS_SKIP_SEED", "").lower() in ("1", "true", "yes")
 
-if SEED.is_file() and count == 0:
+if skip_seed:
+    print("Auto-seed disabled (GMAPS_SKIP_SEED) — using existing database only")
+elif SEED.is_file() and count == 0:
     shutil.copy2(SEED, DB_PATH)
     count = place_count(DB_PATH)
     print(f"Seeded database: {count} places copied from {SEED} -> {DB_PATH}")
+elif count > 0:
+    print(f"Database already has {count} places — seed not applied")
 
 print(f"Database ready: {DB_PATH} ({count} places, data dir: {DATA_DIR})")
 PY
