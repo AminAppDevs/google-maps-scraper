@@ -22,6 +22,7 @@ try:
         get_place,
         update_place,
         delete_place,
+        delete_places,
         cleanup_invalid_places,
         seed_from_bundle,
         mark_whatsapp_shared,
@@ -89,6 +90,10 @@ class UpdatePlaceRequest(BaseModel):
     address: Optional[str] = None
     city: Optional[str] = None
     whatsapp_shared: Optional[bool] = None
+
+
+class BulkDeleteRequest(BaseModel):
+    ids: List[int] = Field(..., min_length=1)
 
 
 async def _run_scrape(
@@ -204,6 +209,14 @@ async def api_update_place(place_id: int, body: UpdatePlaceRequest):
     if not row:
         raise HTTPException(status_code=404, detail="Place not found")
     return {"place": _enrich_place(row), "stats": get_stats()}
+
+
+@app.post("/api/places/bulk-delete")
+async def api_bulk_delete_places(body: BulkDeleteRequest):
+    deleted = delete_places(body.ids)
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="No places found")
+    return {"ok": True, "deleted": deleted, "stats": get_stats()}
 
 
 @app.delete("/api/places/{place_id}")

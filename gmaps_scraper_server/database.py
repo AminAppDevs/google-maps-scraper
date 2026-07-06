@@ -373,6 +373,18 @@ def delete_place(place_id: int) -> bool:
         return cur.rowcount > 0
 
 
+def delete_places(place_ids: List[int]) -> int:
+    """Delete multiple places by id. Returns number of rows deleted."""
+    if not place_ids:
+        return 0
+    unique_ids = list(dict.fromkeys(int(i) for i in place_ids))
+    placeholders = ",".join("?" * len(unique_ids))
+    with get_connection() as conn:
+        cur = conn.execute(f"DELETE FROM places WHERE id IN ({placeholders})", unique_ids)
+        conn.commit()
+        return cur.rowcount
+
+
 def cleanup_invalid_places() -> Dict[str, int]:
     """Remove foreign/invalid listings, non-pet businesses, and rows without phone."""
     from .validation import (

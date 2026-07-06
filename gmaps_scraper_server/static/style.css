@@ -575,6 +575,67 @@ button:not(:disabled):active {
   font-weight: 700;
 }
 
+.bulk-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem;
+  margin-bottom: 0.75rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: 12px;
+  background: rgba(220, 38, 38, 0.08);
+  border: 1px solid rgba(220, 38, 38, 0.18);
+}
+
+.bulk-bar.hidden {
+  display: none;
+}
+
+.bulk-count {
+  font-weight: 700;
+  font-size: 0.88rem;
+  color: #991b1b;
+  margin-inline-end: auto;
+}
+
+.danger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.55rem 0.85rem;
+  border-radius: 10px;
+  background: rgba(220, 38, 38, 0.14);
+  border: 1px solid rgba(220, 38, 38, 0.35);
+  color: #991b1b;
+  font-weight: 700;
+  font-size: 0.82rem;
+}
+
+.danger:hover:not(:disabled) {
+  background: rgba(220, 38, 38, 0.22);
+}
+
+.col-check {
+  width: 2.5rem;
+  text-align: center;
+  padding-inline: 0.45rem !important;
+}
+
+.col-check input[type="checkbox"] {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+tbody tr.row-selected {
+  background: rgba(91, 108, 255, 0.08);
+}
+
+tbody tr.row-selected:hover {
+  background: rgba(91, 108, 255, 0.12);
+}
+
 .table-wrap {
   overflow-x: auto;
   border-radius: 14px;

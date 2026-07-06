@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/style.css?v=5" />
+  <link rel="stylesheet" href="/static/style.css?v=6" />
 </head>
 <body>
   <div class="page">
@@ -204,10 +204,17 @@
           </div>
         </div>
 
+        <div id="bulk-bar" class="bulk-bar hidden">
+          <span id="bulk-count" class="bulk-count">0 محدّد</span>
+          <button type="button" id="bulk-delete" class="danger"><span data-icon="trash"></span> حذف المحدّد</button>
+          <button type="button" id="bulk-clear" class="secondary">إلغاء التحديد</button>
+        </div>
+
         <div class="table-wrap">
           <table id="saved-table">
             <thead>
               <tr>
+                <th class="col-check"><input type="checkbox" id="select-all-page" aria-label="تحديد الصفحة" title="تحديد الصفحة" /></th>
                 <th>الحالة</th>
                 <th>الاسم</th>
                 <th>الهاتف</th>
@@ -286,6 +293,6 @@
       · تخزين SQLite · تواصل واتساب لوليف
     </footer>
   </div>
-  <script type="module" src="/static/app.js?v=10"></script>
+  <script type="module" src="/static/app.js?v=11"></script>
 </body>
 </html>

@@ -56,7 +56,12 @@ let pagination = { page: 1, page_size: PAGE_SIZE, total: 0, total_pages: 1 };
 let pollTimer = null;
 let toastTimer = null;
 let sharingIds = new Set();
+let selectedIds = new Set();
 let loadInFlight = false;
+
+const bulkBar = document.getElementById("bulk-bar");
+const bulkCountEl = document.getElementById("bulk-count");
+const selectAllPageCb = document.getElementById("select-all-page");
 
 await initIcons();
 
@@ -431,6 +436,49 @@ function bumpSharedAnalytics() {
   });
 }
 
+function updateBulkBar() {
+  const n = selectedIds.size;
+  bulkBar.classList.toggle("hidden", n === 0);
+  bulkCountEl.textContent = n === 1 ? "1 محدّد" : `${n} محدّد`;
+}
+
+function updateSelectAllCheckbox(places) {
+  if (!selectAllPageCb) return;
+  const pageIds = places.map((p) => p.id);
+  const selectedOnPage = pageIds.filter((id) => selectedIds.has(id)).length;
+  selectAllPageCb.checked = pageIds.length > 0 && selectedOnPage === pageIds.length;
+  selectAllPageCb.indeterminate = selectedOnPage > 0 && selectedOnPage < pageIds.length;
+}
+
+function togglePlaceSelection(id, checked) {
+  if (checked) selectedIds.add(id);
+  else selectedIds.delete(id);
+  updateBulkBar();
+  updateSelectAllCheckbox(savedPlaces);
+}
+
+function clearSelection() {
+  selectedIds.clear();
+  updateBulkBar();
+  updateSelectAllCheckbox(savedPlaces);
+  savedTableBody.querySelectorAll(".row-check").forEach((cb) => {
+    cb.checked = false;
+  });
+  if (selectAllPageCb) {
+    selectAllPageCb.checked = false;
+    selectAllPageCb.indeterminate = false;
+  }
+}
+
+function toggleSelectAllOnPage(checked) {
+  savedPlaces.forEach((p) => {
+    if (checked) selectedIds.add(p.id);
+    else selectedIds.delete(p.id);
+  });
+  updateBulkBar();
+  renderSavedTable(savedPlaces);
+}
+
 function updatePaginationUI() {
   const { page, total, total_pages } = pagination;
   pageInfoEl.textContent = formatPagination(page, total_pages, total);
@@ -441,7 +489,8 @@ function updatePaginationUI() {
 function renderSavedTable(places, highlightId = null) {
   savedTableBody.innerHTML = "";
   if (!places.length) {
-    savedTableBody.innerHTML = `<tr><td colspan="7" class="empty-row">لا توجد نتائج في هذه الصفحة.</td></tr>`;
+    savedTableBody.innerHTML = `<tr><td colspan="8" class="empty-row">لا توجد نتائج في هذه الصفحة.</td></tr>`;
+    updateSelectAllCheckbox([]);
     return;
   }
 
@@ -449,6 +498,7 @@ function renderSavedTable(places, highlightId = null) {
     const tr = document.createElement("tr");
     if (p.whatsapp_shared) tr.classList.add("row-shared");
     if (highlightId === p.id) tr.classList.add("row-just-shared");
+    if (selectedIds.has(p.id)) tr.classList.add("row-selected");
 
     const statusBadge = p.whatsapp_shared
       ? `<span class="tag tag-shared">${icon("clipboard-check")} تم المشاركة</span>`
@@ -458,7 +508,10 @@ function renderSavedTable(places, highlightId = null) {
       ? `<button type="button" class="wa-btn">${icon("msgs")} واتساب</button>`
       : `<span class="muted">بدون هاتف</span>`;
 
+    const checked = selectedIds.has(p.id) ? "checked" : "";
+
     tr.innerHTML = `
+      <td class="col-check"><input type="checkbox" class="row-check" data-id="${p.id}" aria-label="تحديد ${escapeHtml(p.name || "")}" ${checked} /></td>
       <td>${statusBadge}</td>
       <td>${escapeHtml(p.name || "—")}</td>
       <td dir="ltr">${escapeHtml(p.phone || "—")}</td>
@@ -473,6 +526,12 @@ function renderSavedTable(places, highlightId = null) {
       </td>
     `;
 
+    const rowCb = tr.querySelector(".row-check");
+    rowCb.addEventListener("change", () => {
+      togglePlaceSelection(p.id, rowCb.checked);
+      tr.classList.toggle("row-selected", rowCb.checked);
+    });
+
     const waBtn = tr.querySelector(".wa-btn");
     if (waBtn) waBtn.addEventListener("click", () => openWhatsApp(p));
 
@@ -481,6 +540,8 @@ function renderSavedTable(places, highlightId = null) {
 
     savedTableBody.appendChild(tr);
   });
+
+  updateSelectAllCheckbox(places);
 }
 
 function openEditModal(place) {
@@ -548,7 +609,36 @@ async function deletePlace(place) {
     return;
   }
 
+  selectedIds.delete(place.id);
+  updateBulkBar();
   showToast("تم الحذف ✓");
+  if (data.stats) {
+    updateStatCards(data.stats);
+    dbCountBadge.textContent = String(data.stats.total ?? 0);
+    resultsStatsLine.textContent = formatStatsLine(data.stats);
+  }
+  await loadSavedPlaces({ silent: true });
+}
+
+async function bulkDeletePlaces() {
+  const ids = [...selectedIds];
+  if (!ids.length) return;
+  if (!confirm(`حذف ${ids.length} مكان؟ لا يمكن التراجع.`)) return;
+
+  const res = await fetch("/api/places/bulk-delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    showToast(data.detail || "تعذّر الحذف");
+    return;
+  }
+
+  selectedIds.clear();
+  updateBulkBar();
+  showToast(`تم حذف ${data.deleted ?? ids.length} ✓`);
   if (data.stats) {
     updateStatCards(data.stats);
     dbCountBadge.textContent = String(data.stats.total ?? 0);
@@ -580,6 +670,7 @@ async function loadSavedPlaces({ silent = false } = {}) {
     updateStatCards(stats);
     updatePaginationUI();
     renderSavedTable(savedPlaces);
+    updateBulkBar();
   } finally {
     loadInFlight = false;
   }
@@ -607,6 +698,13 @@ pageNextBtn.addEventListener("click", () => {
 
 document.getElementById("refresh-results").addEventListener("click", () => loadSavedPlaces());
 
+selectAllPageCb?.addEventListener("change", () => {
+  toggleSelectAllOnPage(selectAllPageCb.checked);
+});
+
+document.getElementById("bulk-delete")?.addEventListener("click", bulkDeletePlaces);
+document.getElementById("bulk-clear")?.addEventListener("click", clearSelection);
+
 document.getElementById("cleanup-invalid").addEventListener("click", async () => {
   if (!confirm("حذف غير المتعلق بالحيوانات + الخاطئ + بدون هاتف؟")) return;
   const res = await fetch("/api/places/cleanup-invalid", { method: "POST" });
@@ -616,6 +714,7 @@ document.getElementById("cleanup-invalid").addEventListener("click", async () =>
     return;
   }
   showToast(`تم — غير حيوانات ${data.deleted_non_pet ?? 0} · حذف ${data.deleted ?? 0} · بدون هاتف ${data.deleted_no_phone ?? 0}`);
+  clearSelection();
   if (data.stats) {
     updateStatCards(data.stats);
     dbCountBadge.textContent = String(data.stats.total ?? 0);
@@ -626,16 +725,19 @@ document.getElementById("cleanup-invalid").addEventListener("click", async () =>
 
 document.getElementById("filter-status").addEventListener("change", () => {
   currentPage = 1;
+  clearSelection();
   loadSavedPlaces();
 });
 document.getElementById("filter-city").addEventListener("change", () => {
   currentPage = 1;
+  clearSelection();
   loadSavedPlaces();
 });
 document.getElementById("filter-search").addEventListener("input", () => {
   clearTimeout(window._searchTimer);
   window._searchTimer = setTimeout(() => {
     currentPage = 1;
+    clearSelection();
     loadSavedPlaces();
   }, 300);
 });
