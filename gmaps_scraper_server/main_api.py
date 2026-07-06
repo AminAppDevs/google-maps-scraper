@@ -203,6 +203,12 @@ async def api_job_status():
     return job_manager.status()
 
 
+@app.get("/api/job/events")
+async def api_job_events(after: int = Query(0, ge=0)):
+    """Poll job log — reliable through CapRover/nginx (no long-lived stream)."""
+    return job_manager.events_since(after)
+
+
 @app.get("/api/job/stream")
 async def api_job_stream():
     async def event_generator() -> AsyncIterator[str]:

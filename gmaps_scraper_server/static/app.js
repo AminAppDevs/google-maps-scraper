@@ -61,9 +61,36 @@ let loadInFlight = false;
 let scrapeActive = false;
 
 const scrapeLogWrap = document.getElementById("scrape-log-wrap");
+const scrapeLogScroll = document.getElementById("scrape-log-scroll");
 const scrapeLogEl = document.getElementById("scrape-log");
 const stopJobBtn = document.getElementById("stop-job-btn");
-let jobStreamAbort = null;
+let jobWatchAbort = null;
+let jobEventCursor = 0;
+let scrapeLogPinnedBottom = true;
+const JOB_POLL_MS = 2000;
+
+function isScrapeLogAtBottom(threshold = 28) {
+  if (!scrapeLogScroll) return true;
+  return scrapeLogScroll.scrollHeight - scrapeLogScroll.scrollTop - scrapeLogScroll.clientHeight <= threshold;
+}
+
+function scrollScrapeLogToBottom(force = false) {
+  if (!scrapeLogScroll) return;
+  if (force || scrapeLogPinnedBottom) {
+    scrapeLogScroll.scrollTop = scrapeLogScroll.scrollHeight;
+    scrapeLogPinnedBottom = true;
+  }
+}
+
+if (scrapeLogScroll) {
+  scrapeLogScroll.addEventListener("scroll", () => {
+    scrapeLogPinnedBottom = isScrapeLogAtBottom();
+  }, { passive: true });
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 const bulkBar = document.getElementById("bulk-bar");
 const bulkCountEl = document.getElementById("bulk-count");
@@ -152,6 +179,7 @@ function hideProgress() {
 
 function clearScrapeLog() {
   scrapeLogEl.innerHTML = "";
+  scrapeLogPinnedBottom = true;
   scrapeLogWrap.classList.add("hidden");
 }
 
@@ -164,7 +192,7 @@ function appendScrapeLog(message, level = "info", ts = null) {
   li.className = `log-${level}`;
   li.innerHTML = `<time>${time}</time>${escapeHtml(message)}`;
   scrapeLogEl.appendChild(li);
-  scrapeLogEl.scrollTop = scrapeLogEl.scrollHeight;
+  requestAnimationFrame(() => scrollScrapeLogToBottom());
 }
 
 function updateJobUI(running, status = {}) {
@@ -187,9 +215,9 @@ function logJobEvent(event) {
   appendScrapeLog(event.message, level, event.ts);
 }
 
-function handleJobEvent(event, handlers) {
+function handleJobEvent(event, handlers, { quiet = false } = {}) {
   if (event.type === "idle" || event.type === "heartbeat" || event.type === "_end") return null;
-  if (["start", "progress", "warning", "error", "complete", "cancelled"].includes(event.type)) {
+  if (!quiet && ["start", "progress", "warning", "error", "complete", "cancelled"].includes(event.type)) {
     logJobEvent(event);
   }
   if (event.type === "start") handlers.onStart?.(event);
@@ -202,53 +230,66 @@ function handleJobEvent(event, handlers) {
   return null;
 }
 
-async function followJobStream(handlers) {
-  if (jobStreamAbort) jobStreamAbort.abort();
-  jobStreamAbort = new AbortController();
-
-  const res = await fetch("/api/job/stream", { signal: jobStreamAbort.signal }).catch((err) => {
-    if (err.name === "AbortError") return null;
-    throw new Error(formatFetchError(err));
-  });
-  if (!res) return null;
+async function fetchJobEvents(after) {
+  const res = await fetch(`/api/job/events?after=${after}`);
   if (!res.ok) throw new Error(formatFetchError(new Error(`HTTP ${res.status}`), res));
-  if (!res.body) throw new Error("لا يوجد استجابة من الخادم");
+  return res.json();
+}
 
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let terminal = null;
+async function watchJob(handlers, { replay = false } = {}) {
+  if (jobWatchAbort) jobWatchAbort.abort();
+  jobWatchAbort = new AbortController();
+  if (replay) jobEventCursor = 0;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
+  let reconnectNoteShown = false;
 
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      let event;
-      try {
-        event = JSON.parse(line);
-      } catch {
-        appendScrapeLog(`استجابة غير صالحة: ${line.slice(0, 80)}`, "warn");
-        continue;
+  while (!jobWatchAbort.signal.aborted) {
+    let data;
+    try {
+      data = await fetchJobEvents(jobEventCursor);
+      reconnectNoteShown = false;
+    } catch (err) {
+      if (jobWatchAbort.signal.aborted) return null;
+      if (!reconnectNoteShown) {
+        appendScrapeLog("انقطع الاتصال مؤقتاً — إعادة المزامنة…", "warn");
+        reconnectNoteShown = true;
       }
-      const result = handleJobEvent(event, handlers);
-      if (result) terminal = result;
+      await sleep(JOB_POLL_MS);
+      continue;
     }
+
+    for (const event of data.events || []) {
+      const result = handleJobEvent(event, handlers);
+      if (result) return result;
+    }
+    jobEventCursor = data.total ?? jobEventCursor;
+
+    if (data.running) {
+      updateJobUI(true, data);
+      if (data.step != null && data.total_steps) {
+        setProgress(data.step, data.total_steps, data.message || "جاري التنفيذ…");
+      } else if (data.message) {
+        setProgress(0, 1, data.message);
+      }
+      await sleep(JOB_POLL_MS);
+      continue;
+    }
+
+    const terminal = (data.events || []).slice().reverse().find((e) =>
+      ["complete", "cancelled", "error"].includes(e.type)
+    );
+    if (terminal) {
+      handlers.onComplete?.(terminal);
+      return terminal;
+    }
+    return null;
   }
-
-  if (terminal) return terminal;
-
-  const status = await fetch("/api/job/status").then((r) => r.json()).catch(() => ({ status: "idle" }));
-  if (status.running) return followJobStream(handlers);
-  return terminal;
+  return null;
 }
 
 async function startJob(url, body, handlers) {
-  if (jobStreamAbort) jobStreamAbort.abort();
+  if (jobWatchAbort) jobWatchAbort.abort();
+  jobEventCursor = 0;
   clearScrapeLog();
   progressWrap.classList.remove("hidden");
   setProgress(0, 1, "جاري البدء…");
@@ -268,15 +309,15 @@ async function startJob(url, body, handlers) {
 
   const job = await startRes.json();
   updateJobUI(true, job);
-  return followJobStream(handlers);
+  return watchJob(handlers);
 }
 
 function finishJobUI(event) {
   updateJobUI(false);
   hideProgress();
-  if (jobStreamAbort) {
-    jobStreamAbort.abort();
-    jobStreamAbort = null;
+  if (jobWatchAbort) {
+    jobWatchAbort.abort();
+    jobWatchAbort = null;
   }
   if (!event) return;
 
@@ -393,8 +434,10 @@ form.addEventListener("submit", async (e) => {
   } catch (err) {
     finishJobUI(null);
     const msg = formatFetchError(err);
-    appendScrapeLog(msg, "error");
-    setStatus(msg, "error");
+    if (!msg.toLowerCase().includes("abort")) {
+      appendScrapeLog(msg, "error");
+      setStatus(msg, "error");
+    }
   }
 });
 
@@ -424,12 +467,14 @@ async function tryReconnectActiveJob() {
     }
 
     const handlers = status.kind === "city" ? cityJobHandlers : singleJobHandlers;
-    const event = await followJobStream(handlers);
+    const event = await watchJob(handlers, { replay: true });
+    scrollScrapeLogToBottom(true);
     finishJobUI(event);
   } catch (err) {
     if (err.name !== "AbortError") {
       updateJobUI(false);
-      appendScrapeLog(formatFetchError(err), "error");
+      const msg = formatFetchError(err);
+      if (!scrapeActive) appendScrapeLog(msg, "error");
     }
   }
 }

@@ -60,6 +60,18 @@ class JobManager:
         snap["running"] = self._job.status == "running"
         return snap
 
+    def events_since(self, after: int = 0) -> Dict[str, Any]:
+        if not self._job:
+            return {**self.status(), "events": [], "total": 0}
+        job = self._job
+        after = max(0, min(after, len(job.events)))
+        return {
+            **self._snapshot(job),
+            "running": job.status == "running",
+            "events": job.events[after:],
+            "total": len(job.events),
+        }
+
     def _emit(self, job: ScrapeJob, event: Dict[str, Any]) -> None:
         payload = {**event, "job_id": job.id, "ts": time.time()}
         job.events.append(payload)

@@ -454,8 +454,6 @@ button:not(:disabled):active {
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.35);
   border: 1px solid rgba(255, 255, 255, 0.55);
-  max-height: 14rem;
-  overflow-y: auto;
 }
 
 .scrape-log-title {
@@ -466,6 +464,17 @@ button:not(:disabled):active {
   display: flex;
   align-items: center;
   gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+.scrape-log-scroll {
+  max-height: 14rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  border-radius: 8px;
+  padding-inline: 0.15rem;
 }
 
 .scrape-log {

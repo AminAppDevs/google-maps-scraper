@@ -116,6 +116,14 @@ async def scrape_city_grid(
             })
 
             try:
+                def cell_progress(event: Dict[str, Any]) -> None:
+                    if on_progress:
+                        on_progress({
+                            **event,
+                            "step": step,
+                            "total_steps": total_steps,
+                        })
+
                 batch = await scrape_google_maps(
                     query=kw,
                     max_places=max_per_cell,
@@ -127,6 +135,7 @@ async def scrape_city_grid(
                     zoom=zoom,
                     filter_city=city,
                     should_cancel=should_cancel,
+                    on_progress=cell_progress if on_progress else None,
                 )
                 all_places.extend(batch)
                 logger.info("Cell (%s,%s) keyword %r -> %d places (raw total %d)", cell.row, cell.col, kw, len(batch), len(all_places))
