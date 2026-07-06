@@ -1,6 +1,7 @@
 /** Nucleo Glass Icons — loaded from open-source package (nucleoapp.com/svg-glass-icons) */
 const ICON_CDN =
   "https://cdn.jsdelivr.net/gh/tinglinzh/nucleo-glass-icons@main/public/icons/index.json";
+const ICON_FETCH_MS = 5000;
 
 let iconMap = null;
 let iconLoadPromise = null;
@@ -12,7 +13,7 @@ const LOCAL_ICONS = {
 export async function loadIcons() {
   if (iconMap) return iconMap;
   if (iconLoadPromise) return iconLoadPromise;
-  iconLoadPromise = fetch(ICON_CDN)
+  iconLoadPromise = fetch(ICON_CDN, { signal: AbortSignal.timeout(ICON_FETCH_MS) })
     .then((r) => r.json())
     .then((list) => {
       iconMap = {

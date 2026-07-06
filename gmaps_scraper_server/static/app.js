@@ -1,4 +1,4 @@
-import { initIcons, icon } from "./icons.js";
+import { initIcons, icon } from "./icons.js?v=2";
 
 const PAGE_SIZE = 25;
 
@@ -96,7 +96,13 @@ const bulkBar = document.getElementById("bulk-bar");
 const bulkCountEl = document.getElementById("bulk-count");
 const selectAllPageCb = document.getElementById("select-all-page");
 
-await initIcons();
+void initIcons();
+
+function showLoadError(err) {
+  const msg = err?.message || "تعذّر تحميل البيانات";
+  resultsStatsLine.textContent = `خطأ في التحميل — ${msg}`;
+  showToast("تعذّر تحميل النتائج — حاول تحديث الصفحة");
+}
 
 function showToast(msg) {
   toastEl.textContent = msg;
@@ -864,7 +870,10 @@ async function loadSavedPlaces({ silent = false } = {}) {
   try {
     const params = buildQueryParams(false);
     const res = await fetch(`/api/places?${params}`);
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `HTTP ${res.status}`);
+    }
     savedPlaces = (data.places || []).map((p) => {
       if (sharingIds.has(p.id)) {
         return { ...p, whatsapp_shared: true, whatsapp_shared_at: p.whatsapp_shared_at || new Date().toISOString() };
@@ -882,6 +891,8 @@ async function loadSavedPlaces({ silent = false } = {}) {
     updatePaginationUI();
     renderSavedTable(savedPlaces);
     updateBulkBar();
+  } catch (err) {
+    if (!silent) showLoadError(err);
   } finally {
     loadInFlight = false;
   }

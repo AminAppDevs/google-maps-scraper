@@ -30,6 +30,12 @@ try:
         get_stats,
     )
     from gmaps_scraper_server.job_manager import job_manager, ScrapeCancelled, ScrapeJob
+    from gmaps_scraper_server.whatsapp import (
+        whatsapp_url,
+        whatsapp_link_parts,
+        whatsapp_desktop_url,
+        build_waleef_message,
+    )
 except ImportError:
     logging.error("Could not import scraper modules")
 
