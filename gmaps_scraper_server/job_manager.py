@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
-MAX_EVENTS = 600
+MAX_EVENTS = 3500
 TERMINAL = frozenset({"complete", "error", "cancelled"})
 
 
@@ -40,7 +40,7 @@ class JobManager:
 
     def _snapshot(self, job: ScrapeJob) -> Dict[str, Any]:
         last = job.events[-1] if job.events else {}
-        return {
+        snap = {
             "id": job.id,
             "kind": job.kind,
             "label": job.label,
@@ -51,7 +51,14 @@ class JobManager:
             "step": last.get("step"),
             "total_steps": last.get("total_steps"),
             "message": last.get("message"),
+            "detail_index": last.get("detail_index"),
+            "detail_total": last.get("detail_total"),
+            "place_name": last.get("place_name"),
+            "place_kind": last.get("place_kind"),
+            "links_found": last.get("links_found"),
+            "save_totals": last.get("save_totals"),
         }
+        return snap
 
     def status(self) -> Dict[str, Any]:
         if not self._job:

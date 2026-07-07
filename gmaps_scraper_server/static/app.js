@@ -211,23 +211,65 @@ function updateJobUI(running, status = {}) {
   }
 }
 
+function saveTotalsSuffix(totals) {
+  if (!totals) return "";
+  const ins = totals.inserted ?? 0;
+  const upd = totals.updated ?? 0;
+  if (ins === 0 && upd === 0) return "";
+  return ` · محفوظ: ${ins} جديد، ${upd} محدّث`;
+}
+
+function formatJobLogMessage(event) {
+  if (!event) return "";
+  if (event.type === "place_fetched" && event.place_name) {
+    const idx = event.detail_index && event.detail_total
+      ? `[${event.detail_index}/${event.detail_total}] `
+      : "";
+    const kind = event.place_kind ? `${event.place_kind}: ` : "";
+    let line = `${idx}${kind}${event.place_name}`;
+    if (event.place_phone) line += ` · ${event.place_phone}`;
+    else line += " · بدون هاتف";
+    line += saveTotalsSuffix(event.save_totals);
+    if (event.step && event.total_steps) {
+      line += ` · منطقة ${event.step}/${event.total_steps}`;
+    }
+    return line;
+  }
+  let msg = event.message || "";
+  if (event.links_found && !msg.includes("القائمة")) {
+    msg += ` · ${event.links_found} في القائمة`;
+  }
+  msg += saveTotalsSuffix(event.save_totals);
+  return msg;
+}
+
 function logJobEvent(event) {
-  if (!event?.message) return;
+  const text = formatJobLogMessage(event);
+  if (!text) return;
   const level =
     event.type === "error" ? "error"
     : event.type === "warning" || event.type === "cancelled" ? "warn"
-    : event.type === "complete" || event.type === "start" ? "ok"
+    : event.type === "place_fetched" && !event.has_phone ? "warn"
+    : event.type === "complete" || event.type === "start" || event.type === "cell_complete" ? "ok"
+    : event.type === "place_fetched" ? "info"
     : "info";
-  appendScrapeLog(event.message, level, event.ts);
+  appendScrapeLog(text, level, event.ts);
 }
 
 function handleJobEvent(event, handlers, { quiet = false } = {}) {
   if (event.type === "idle" || event.type === "heartbeat" || event.type === "_end") return null;
-  if (!quiet && ["start", "progress", "warning", "error", "complete", "cancelled"].includes(event.type)) {
+  if (!quiet && ["start", "progress", "place_fetched", "cell_complete", "warning", "error", "complete", "cancelled"].includes(event.type)) {
     logJobEvent(event);
+    if (event.type === "cell_complete" && event.save_stats?.ok) {
+      const s = event.save_stats;
+      const cellLine = `هذه المنطقة: +${s.inserted ?? 0} جديد، ${s.updated ?? 0} محدّث`;
+      appendScrapeLog(cellLine, "ok", event.ts);
+    } else if (event.type === "cell_complete" && event.save_stats?.ok === false) {
+      appendScrapeLog(`خطأ الحفظ: ${event.save_stats.error || "unknown"}`, "error", event.ts);
+    }
   }
   if (event.type === "start") handlers.onStart?.(event);
-  else if (event.type === "progress" || event.type === "warning") handlers.onProgress?.(event);
+  else if (event.type === "progress" || event.type === "place_fetched" || event.type === "cell_complete" || event.type === "warning") handlers.onProgress?.(event);
   else if (event.type === "error") throw new Error(event.message || "فشل الجمع");
   else if (event.type === "complete" || event.type === "cancelled") {
     handlers.onComplete?.(event);
@@ -336,9 +378,13 @@ function finishJobUI(event) {
     const n = event.results_count ?? event.stats?.unique_count ?? 0;
     const saved = event.save_stats;
     let msg = event.message || `تم — ${n} مكان`;
-    if (saved) msg += ` · قاعدة البيانات: ${saved.inserted} جديد، ${saved.updated} محدّث`;
+    if (saved?.ok === false) {
+      msg += ` · خطأ الحفظ: ${saved.error || "unknown"}`;
+    } else if (saved && saved.ok !== false) {
+      msg += ` · قاعدة البيانات: ${saved.inserted ?? 0} جديد، ${saved.updated ?? 0} محدّث`;
+    }
     if (event.kind === "single" && n === 0) msg += " — تحقق من السجل (قد تكون صفحة موافقة Google)";
-    setStatus(msg, n > 0 || event.save_stats ? "success" : "error");
+    setStatus(msg, n > 0 && saved?.ok !== false ? "success" : saved?.ok === false ? "error" : n > 0 ? "success" : "error");
     currentPage = 1;
     switchToResultsTab();
   }
@@ -347,8 +393,13 @@ function finishJobUI(event) {
 const singleJobHandlers = {
   onStart: () => setProgress(0, 1, "بدء الجمع…"),
   onProgress: (e) => {
-    if (e.found) setProgress(1, 1, `تم العثور على ${e.found} رابط…`);
-    else setProgress(0, 1, e.message || "جاري التنفيذ…");
+    if (e.detail_index && e.detail_total) {
+      setProgress(e.detail_index, e.detail_total, formatJobLogMessage(e));
+    } else if (e.found) {
+      setProgress(0, 1, `تم العثور على ${e.found} رابط…${saveTotalsSuffix(e.save_totals)}`);
+    } else {
+      setProgress(0, 1, formatJobLogMessage(e) || "جاري التنفيذ…");
+    }
   },
   onComplete: () => {},
 };
@@ -356,8 +407,18 @@ const singleJobHandlers = {
 const cityJobHandlers = {
   onStart: (e) => setProgress(0, e.total_steps || 1, e.message),
   onProgress: (e) => {
-    if (e.step && e.total_steps) setProgress(e.step, e.total_steps, e.message);
-    if (isResultsVisible()) loadSavedPlaces({ silent: true });
+    if (e.step && e.total_steps) {
+      if (e.type === "place_fetched" && e.detail_index && e.detail_total) {
+        setProgress(e.step, e.total_steps, formatJobLogMessage(e));
+      } else {
+        setProgress(e.step, e.total_steps, formatJobLogMessage(e) || e.message);
+      }
+    } else if (e.detail_index && e.detail_total) {
+      setProgress(e.detail_index, e.detail_total, formatJobLogMessage(e));
+    }
+    if (isResultsVisible() && (e.type === "cell_complete" || (e.type === "place_fetched" && e.detail_index % 15 === 0))) {
+      loadSavedPlaces({ silent: true });
+    }
   },
   onComplete: () => {},
 };

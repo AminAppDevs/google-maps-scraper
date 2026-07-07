@@ -112,7 +112,10 @@ async def scrape_city_grid(
                 "lat": cell.lat,
                 "lng": cell.lon,
                 "raw_so_far": len(all_places),
-                "message": f"منطقة {step}/{total_steps}: {kw} @ ({cell.lat:.3f}, {cell.lon:.3f})",
+                "message": (
+                    f"منطقة {step}/{total_steps}: {kw} @ ({cell.lat:.3f}, {cell.lon:.3f})"
+                    f" · {len(all_places)} مكان خام حتى الآن"
+                ),
             })
 
             try:
@@ -139,6 +142,22 @@ async def scrape_city_grid(
                 )
                 all_places.extend(batch)
                 logger.info("Cell (%s,%s) keyword %r -> %d places (raw total %d)", cell.row, cell.col, kw, len(batch), len(all_places))
+                if batch:
+                    with_phone = sum(1 for p in batch if p.get("phone"))
+                    emit({
+                        "type": "cell_complete",
+                        "step": step,
+                        "total_steps": total_steps,
+                        "keyword": kw,
+                        "results": batch,
+                        "cell_count": len(batch),
+                        "cell_with_phone": with_phone,
+                        "raw_so_far": len(all_places),
+                        "message": (
+                            f"منطقة {step}/{total_steps} انتهت — {len(batch)} مكان"
+                            f" ({with_phone} بها هاتف) · «{kw}»"
+                        ),
+                    })
             except ScrapeCancelled:
                 raise
             except Exception as e:

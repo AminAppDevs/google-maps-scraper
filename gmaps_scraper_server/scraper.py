@@ -144,6 +144,19 @@ def create_search_url(query, lang="en", lat=None, lng=None, zoom=None):
     params = {'q': query, 'hl': lang}
     return BASE_URL + "?" + urlencode(params)
 
+def _place_kind_label(name: str, categories, query: str = "") -> str:
+    """Classify place as store, clinic, or grooming for log display."""
+    cats = categories if isinstance(categories, list) else []
+    blob = f"{name or ''} {' '.join(str(c) for c in cats)} {query or ''}".lower()
+    if any(k in blob for k in ("بيطر", "veterinary", "vet clinic", "animal hospital")):
+        return "عيادة بيطرية"
+    if "عيادة" in blob or "clinic" in blob:
+        return "عيادة"
+    if "تجميل" in blob or "grooming" in blob:
+        return "تجميل"
+    return "متجر"
+
+
 async def scrape_place_details(context, link, semaphore):
     """
     Scrapes details for a single place using a new page from the browser context.
@@ -364,6 +377,7 @@ async def scrape_google_maps(
 
             if found_feed and await page.locator(feed_selector).count() > 0:
                 last_height = await page.evaluate(f'document.querySelector(\'{feed_selector}\').scrollHeight')
+                last_links_reported = 0
                 while True:
                     _check_cancel(should_cancel)
                     # Incremental scroll (more reliable than jumping to bottom)
@@ -378,6 +392,16 @@ async def scrape_google_maps(
                     new_links_found = len(current_links - place_links) > 0
                     place_links.update(current_links)
                     logger.info(f"Found {len(place_links)} unique place links so far...")
+
+                    link_count = len(place_links)
+                    if link_count >= last_links_reported + 8 or (link_count > 0 and last_links_reported == 0):
+                        last_links_reported = link_count
+                        await _emit_progress(
+                            on_progress,
+                            "progress",
+                            f"القائمة: {link_count} مكان في النتائج…",
+                            links_found=link_count,
+                        )
 
                     if max_places is not None and len(place_links) >= max_places:
                         logger.info(f"Reached max_places limit ({max_places}).")
@@ -420,11 +444,50 @@ async def scrape_google_maps(
                 found=len(place_links),
             )
 
+            detail_total = len(place_links)
+            detail_done = 0
+            detail_lock = asyncio.Lock()
+
+            async def scrape_one(context, link, semaphore):
+                nonlocal detail_done
+                result = await scrape_place_details(context, link, semaphore)
+                async with detail_lock:
+                    detail_done += 1
+                    idx = detail_done
+                if on_progress:
+                    if result:
+                        name = (result.get("name") or "—")[:100]
+                        phone = (result.get("phone") or "").strip()
+                        kind = _place_kind_label(name, result.get("categories"), query)
+                        msg = f"[{idx}/{detail_total}] {kind}: {name}"
+                        if phone:
+                            msg += f" · {phone}"
+                        else:
+                            msg += " · بدون هاتف"
+                        await _emit_progress(
+                            on_progress,
+                            "place_fetched",
+                            msg,
+                            place_name=name,
+                            place_kind=kind,
+                            place_phone=phone or None,
+                            has_phone=bool(phone),
+                            detail_index=idx,
+                            detail_total=detail_total,
+                        )
+                    else:
+                        await _emit_progress(
+                            on_progress,
+                            "warning",
+                            f"[{idx}/{detail_total}] تعذّر جلب تفاصيل مكان",
+                            detail_index=idx,
+                            detail_total=detail_total,
+                        )
+                return result
+
             semaphore = asyncio.Semaphore(concurrency)
-            tasks = [scrape_place_details(context, link, semaphore)
-                     for link in place_links]
-            
-            # Run tasks and gather results
+            tasks = [scrape_one(context, link, semaphore) for link in place_links]
+
             scraped_results = await asyncio.gather(*tasks)
             
             # Filter out None results (failed scrapes)
@@ -437,6 +500,16 @@ async def scrape_google_maps(
                     "Filtered %d invalid/foreign places (kept %d)",
                     filter_stats["filtered_out"],
                     filter_stats["kept_count"],
+                )
+                await _emit_progress(
+                    on_progress,
+                    "progress",
+                    (
+                        f"تصفية: {filter_stats['kept_count']} مقبول، "
+                        f"{filter_stats['filtered_out']} مرفوض (خارج السعودية/غير صالح)"
+                    ),
+                    kept_count=filter_stats.get("kept_count"),
+                    filtered_out=filter_stats.get("filtered_out"),
                 )
 
             await browser.close()

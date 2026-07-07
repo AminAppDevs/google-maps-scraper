@@ -173,7 +173,7 @@ def upsert_places(
                         place_id, name, phone, email, address, rating, reviews_count,
                         website, link, latitude, longitude, categories, hours,
                         source_label, city, whatsapp_shared, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
                     """,
                     (
                         row["place_id"], row["name"], row["phone"], row["email"], row["address"],

@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional, List, Dict, Any, AsyncIterator
+from typing import Optional, List, Dict, Any, AsyncIterator, Callable
 import json
 import logging
 import asyncio
@@ -135,9 +135,56 @@ def _save_results(results: List[Dict[str, Any]], source_label: str, city: str) -
     return upsert_places(results, source_label=source_label, city=city)
 
 
-async def _job_run_single(job: ScrapeJob, body: ScrapeRequest) -> None:
+def _save_results_safe(
+    results: List[Dict[str, Any]],
+    source_label: str,
+    city: str,
+) -> Dict[str, Any]:
+    try:
+        stats = _save_results(results, source_label, city)
+        return {"ok": True, **stats}
+    except Exception as exc:
+        logging.exception("Database save failed for %s", source_label)
+        return {"ok": False, "error": str(exc)}
+
+
+def _make_job_progress(
+    job: ScrapeJob,
+    *,
+    save_to_db: bool = False,
+    city: str = "",
+    source_label: str = "",
+) -> Callable[[Dict[str, Any]], None]:
+    save_totals = {"inserted": 0, "updated": 0, "skipped_no_phone": 0}
+
     def on_progress(event: Dict[str, Any]) -> None:
+        if save_to_db and event.get("results"):
+            if event.get("type") in ("cell_complete", "complete"):
+                save_out = _save_results_safe(event["results"], source_label, city)
+                event["save_stats"] = save_out
+                if save_out.get("ok"):
+                    save_totals["inserted"] += save_out.get("inserted", 0)
+                    save_totals["updated"] += save_out.get("updated", 0)
+                    save_totals["skipped_no_phone"] += save_out.get("skipped_no_phone", 0)
+                else:
+                    err = save_out.get("error", "save failed")
+                    event["message"] = f"{event.get('message', '')} · خطأ الحفظ: {err}"
+                    if event.get("type") == "complete":
+                        raise RuntimeError(err)
+        event["save_totals"] = dict(save_totals)
+        if event.get("type") == "cell_complete" and save_to_db:
+            event["message"] = (
+                f"{event.get('message', '')} · "
+                f"إجمالي محفوظ: {save_totals['inserted']} جديد، "
+                f"{save_totals['updated']} محدّث"
+            )
         job_manager.emit(job, event)
+
+    return on_progress
+
+
+async def _job_run_single(job: ScrapeJob, body: ScrapeRequest) -> None:
+    on_progress = _make_job_progress(job, save_to_db=False)
 
     job_manager.emit(job, {
         "type": "start",
@@ -164,8 +211,14 @@ async def _job_run_single(job: ScrapeJob, body: ScrapeRequest) -> None:
     stats = {**stats, **filter_stats}
 
     save_stats = {}
+    save_totals = {"inserted": 0, "updated": 0, "skipped_no_phone": 0}
     if body.save_to_db and results:
-        save_stats = _save_results(results, source_label=body.query, city="")
+        save_out = _save_results_safe(results, source_label=body.query, city="")
+        save_stats = save_out
+        if save_out.get("ok"):
+            save_totals["inserted"] = save_out.get("inserted", 0)
+            save_totals["updated"] = save_out.get("updated", 0)
+            save_totals["skipped_no_phone"] = save_out.get("skipped_no_phone", 0)
 
     logging.info("Scraping finished for %r — %d unique", body.query, len(results))
     job_manager.emit(job, {
@@ -173,21 +226,19 @@ async def _job_run_single(job: ScrapeJob, body: ScrapeRequest) -> None:
         "results_count": len(results),
         "stats": stats,
         "save_stats": save_stats,
+        "save_totals": save_totals,
         "message": f"تم — {len(results)} مكان تم جمعه",
     })
 
 
 async def _job_run_city(job: ScrapeJob, body: CityScrapeRequest) -> None:
     city_name = body.city
-
-    def on_progress(event: Dict[str, Any]) -> None:
-        if event.get("type") == "complete" and body.save_to_db and event.get("results"):
-            event["save_stats"] = _save_results(
-                event["results"],
-                source_label=f"city-scan:{city_name}",
-                city=city_name,
-            )
-        job_manager.emit(job, event)
+    on_progress = _make_job_progress(
+        job,
+        save_to_db=body.save_to_db,
+        city=city_name,
+        source_label=f"city-scan:{city_name}",
+    )
 
     await scrape_city_grid(
         city=body.city,
